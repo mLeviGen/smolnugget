@@ -1,6 +1,8 @@
 # smolnugget
 a small utility for synchronizing a repository in GitHub and files in a directory (on the server)
 
+python: 3.12.7+
+
 `python3 snt.py --help` - all information
 
 1. download the file to the folder where it will be cloned
