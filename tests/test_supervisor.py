@@ -220,8 +220,8 @@ class DaemonTest(unittest.TestCase):
         self.store.save(apps)
 
     def count(self, name):
-        m = self.markers[name]
-        return len(m.read_text().splitlines()) if m.exists() else 0
+        m = self.markers.get(name)
+        return len(m.read_text().splitlines()) if m and m.exists() else 0
 
     def start(self, names=None):
         d = Daemon(self.store, names, tick=0.1)
@@ -269,6 +269,21 @@ class DaemonTest(unittest.TestCase):
         self.store.save(apps)
         wait_for(lambda: not is_managed(self.store, "b"))
         self.assertEqual(d.workers, {})
+
+    def test_edit_during_startup_is_not_lost(self):
+        # Regression: an edit landing right after the initial load used to be ignored.
+        test = self
+
+        class RacyDaemon(Daemon):
+            def _acquire_initial(self):
+                super()._acquire_initial()
+                test.add("a")
+
+        d = RacyDaemon(self.store, None, tick=0.1)
+        t = threading.Thread(target=d.run)
+        t.start()
+        self.addCleanup(lambda: (d.request_stop(), t.join(30)))
+        wait_for(lambda: self.count("a") == 1)
 
     def test_named_mode_ignores_other_apps(self):
         self.add("a")
