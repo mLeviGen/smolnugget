@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# runtime data of the old snt.py (contains the GitHub token!)
+config.json
+repo/
+repos/
