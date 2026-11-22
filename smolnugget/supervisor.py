@@ -485,17 +485,19 @@ class Daemon:
 
     def run(self) -> None:
         try:
+            # Take the signature *before* the first load: an edit that lands between the
+            # two must still trigger a reload, not be mistaken for the loaded state.
+            signature = self.store.config_signature()
             self._acquire_initial()
             self._install_signals()
             managed = ", ".join(self.workers) or "nothing yet (add apps with 'snt add')"
             self.log.info("snt %s started, managing: %s", __version__, managed)
-            mtime = self.store.config_mtime()
             last_retry = time.monotonic()
             while not self.stop_event.wait(1.0 if self.tick >= 0.5 else self.tick):
-                new_mtime = self.store.config_mtime()
+                new_signature = self.store.config_signature()
                 retry = self.blocked and time.monotonic() - last_retry >= self.RETRY_BLOCKED
-                if new_mtime != mtime or retry:
-                    mtime = new_mtime
+                if new_signature != signature or retry:
+                    signature = new_signature  # read before reload() loads, same reason
                     last_retry = time.monotonic()
                     self.reload()
             self.log.info("shutting down")

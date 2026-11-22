@@ -142,11 +142,14 @@ class Store:
         return self.app_dir(name) / "control"
 
     # --- config ----------------------------------------------------------
-    def config_mtime(self) -> int:
+    def config_signature(self) -> tuple:
+        """Changes whenever config.json is rewritten (saves replace the file, so the inode
+        changes too, even on filesystems with coarse timestamps)."""
         try:
-            return self.config_path.stat().st_mtime_ns
+            st = self.config_path.stat()
         except OSError:
-            return 0
+            return ()
+        return (st.st_mtime_ns, st.st_size, st.st_ino)
 
     def load(self) -> dict[str, AppConfig]:
         if not self.config_path.exists():
