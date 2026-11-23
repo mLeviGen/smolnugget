@@ -35,6 +35,9 @@ snt = "smolnugget.cli:main"
 [tool.setuptools]
 packages = ["smolnugget"]
 
+[tool.setuptools.package-data]
+smolnugget = ["static/*"]
+
 [tool.setuptools.dynamic]
 version = { attr = "smolnugget.__version__" }
 

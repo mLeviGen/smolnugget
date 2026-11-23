@@ -75,9 +75,10 @@ class Usage:
             p.cpu_percent(None)  # prime
         return p
 
-    def get(self, pid: int | None) -> tuple[str, str]:
+    def get_raw(self, pid: int | None) -> tuple[float | None, int | None]:
+        """CPU percent and resident memory of the process and all its children."""
         if psutil is None or not pid:
-            return "-", "-"
+            return None, None
         try:
             root = self._proc(pid)
             procs = [root] + [self._proc(c.pid) for c in root.children(recursive=True)]
@@ -85,6 +86,12 @@ class Usage:
             rss = sum(p.memory_info().rss for p in procs)
         except (psutil.Error, OSError):
             self.cache.pop(pid, None)
+            return None, None
+        return round(cpu, 1), rss
+
+    def get(self, pid: int | None) -> tuple[str, str]:
+        cpu, rss = self.get_raw(pid)
+        if cpu is None:
             return "-", "-"
         return f"{cpu:.0f}%", fmt_bytes(rss)
 
