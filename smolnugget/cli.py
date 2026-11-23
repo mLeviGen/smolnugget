@@ -441,6 +441,28 @@ def cmd_sync(args, store: Store) -> int:
     return 0
 
 
+def cmd_web(args, store: Store) -> int:
+    from smolnugget.webui import WebServer
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        log.warning("serving on %s: anyone who can reach this address can restart and stop "
+                    "your apps - there is no login", args.host)
+    try:
+        server = WebServer(store, args.host, args.port)
+    except OSError as e:
+        raise CliError(f"cannot listen on {args.host}:{args.port}: {e} (try --port)") from e
+    print(f"smolnugget web UI: {server.url}  (Ctrl+C to stop)")
+    if args.open:
+        import webbrowser
+        webbrowser.open(server.url)
+    try:
+        server.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
 def cmd_service(args, store: Store) -> int:
     from smolnugget import service
     try:
@@ -527,6 +549,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = cmd("top", cmd_top, "live monitor with logs and hotkeys")
     p.add_argument("-n", "--interval", type=float, default=1.0, help="refresh seconds (default 1)")
+
+    p = cmd("web", cmd_web, "local web UI with status, logs and controls")
+    p.add_argument("-p", "--port", type=int, default=8770, help="port (default 8770)")
+    p.add_argument("--host", default="127.0.0.1",
+                   help="address to listen on (default 127.0.0.1 - this computer only)")
+    p.add_argument("-o", "--open", action="store_true", help="open it in the browser")
 
     p = cmd("logs", cmd_logs, "print an app's output")
     p.add_argument("name")

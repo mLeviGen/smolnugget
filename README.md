@@ -25,8 +25,9 @@ ihor_bot  running  41822  3h12m   0         56983e02  you/ihor_bot
   If setup fails after an update, the old version keeps running.
 - **Several apps, one daemon.** Each app has its own folder, virtualenv and log.
   `snt add`, `edit`, `stop` and `start` apply live, no restart needed.
-- **Convenient to watch.** `snt top` is a live monitor with logs and hotkeys, `snt logs -f`
-  follows one app's output, and `snt status --json` feeds dashboards.
+- **Convenient to watch.** `snt web` opens a local dashboard in your browser,
+  `snt top` is a live monitor in the terminal, `snt logs -f` follows one app's output,
+  and `snt status --json` feeds dashboards.
 - **Safe with secrets.** The GitHub token never ends up in `.git/config`, in the URL or in logs.
 - **Nothing to install.** Pure Python standard library plus `git`.
   Runs on Linux, macOS and Windows.
@@ -38,7 +39,7 @@ ihor_bot  running  41822  3h12m   0         56983e02  you/ihor_bot
 
 - [Install](#install) · [Quick start](#quick-start) · [Everyday commands](#everyday-commands)
 - [How it works](#how-it-works) · [App settings](#app-settings) · [Private repositories](#private-repositories)
-- [Running on boot](#running-on-boot) · [Status for dashboards](#status-for-dashboards)
+- [Web UI](#web-ui) · [Running on boot](#running-on-boot) · [Status for dashboards](#status-for-dashboards)
 - [Files](#files) · [Troubleshooting](#troubleshooting) · [Upgrading from 1.x](#upgrading-from-1x) · [Development](#development)
 
 ## Install
@@ -105,6 +106,7 @@ If nothing matches, pass `-c` to `snt add`.
 | | |
 |---|---|
 | `snt status` | all apps at a glance (`ls` works too) |
+| `snt web -o` | local web dashboard at <http://localhost:8770> (see [Web UI](#web-ui)) |
 | `snt top` | live monitor: ↑/↓ select, `r` restart, `u` update now, `s` start/stop, `q` quit |
 | `snt logs NAME -f` | follow an app's output (`-n 200` for more history) |
 | `snt restart NAME` | restart now |
@@ -176,6 +178,32 @@ for that host. It is never written into `.git/config` or shown in logs.
 
 SSH works too: use a `git@github.com:you/repo.git` URL with a
 [deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys).
+
+## Web UI
+
+```sh
+snt web          # http://localhost:8770, Ctrl+C to stop
+snt web -o       # ...and open it in the browser
+snt web -p 9000  # another port
+```
+
+A dark, single-page dashboard. The overview lists every app with its status, uptime, CPU and
+memory, and has buttons to check all apps for updates or show only the ones with problems.
+Each app has its own page with a live log, errors, version and settings, plus restart,
+stop/start and update buttons.
+
+It needs no extra packages and works offline. It talks to the same files as the CLI, so run it
+next to `snt run` or the service; it does not run apps itself. CPU/memory appear when `psutil`
+is installed (the `[top]` extra, included by the installers).
+
+**Security.** It listens on `127.0.0.1` only and has no login, so it is meant for this computer.
+Requests from other websites are refused: the `Host` header must name this server, and actions
+need an `X-Snt` header, which a foreign page cannot send without CORS, and CORS is never allowed.
+To look at a server's dashboard from your PC, use an SSH tunnel rather than `--host 0.0.0.0`:
+
+```sh
+ssh -L 8770:localhost:8770 you@server   # then open http://localhost:8770 locally
+```
 
 ## Running on boot
 
