@@ -13,6 +13,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import webbrowser
@@ -112,7 +113,23 @@ def _free_port() -> int:
 
 
 def _wait_ready(port: int, proc: subprocess.Popen, timeout: float = 30) -> bool:
+    """Wait for snt web on the server to report it listens, then check through the tunnel.
+
+    Probing the tunnel before the server side listens makes ssh print
+    "channel N: open failed", so the first wait is on the server's own startup line.
+    """
     deadline = time.monotonic() + timeout
+    started = threading.Event()
+
+    def read_stdout():
+        for line in proc.stdout:
+            if b"web UI:" in line:
+                started.set()
+        started.set()  # EOF: the remote side exited; poll() below notices
+
+    threading.Thread(target=read_stdout, daemon=True).start()
+    if not started.wait(timeout) or proc.poll() is not None:
+        return False
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             return False
@@ -138,7 +155,7 @@ def open_dashboard(remote: Remote, open_browser: bool = True) -> int:
             "-o", "ExitOnForwardFailure=yes", "-L", f"{port}:127.0.0.1:{port}", remote.target,
             f"{REMOTE_SNT} web --port {port} --exit-on-eof",
         ]
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         if _wait_ready(port, proc):
             break
         code = proc.poll()
@@ -154,7 +171,7 @@ def open_dashboard(remote: Remote, open_browser: bool = True) -> int:
                           "(is snt there up to date? reinstall it with install.sh)")
 
     url = f"http://localhost:{port}/"
-    print(f"{remote.name}: dashboard at {url}  (Ctrl+C to close)")
+    print(f"{remote.name}: dashboard at {url}  (Ctrl+C to close)", flush=True)
     if open_browser:
         webbrowser.open(url)
     try:
