@@ -252,7 +252,7 @@ never included. Times are ISO 8601 UTC.
 ```json
 {
   "schema": 1,
-  "smolnugget": "2.0.0",
+  "smolnugget": "2.1.0",
   "generated_at": "2026-11-22T20:15:00+00:00",
   "daemon": { "running": true, "pid": 4100, "started_at": "2026-11-22T08:00:02+00:00" },
   "apps": [

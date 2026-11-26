@@ -58,10 +58,12 @@ if [ ! -x "$PREFIX/venv/bin/python" ]; then
     "$PY" -m venv "$PREFIX/venv"
 fi
 say "installing smolnugget ($REF)"
-"$PREFIX/venv/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade pip
+PIP="$PREFIX/venv/bin/python -m pip --disable-pip-version-check --no-cache-dir"
+$PIP install --quiet --upgrade pip
 if [ -d "$SOURCE" ]; then SPEC="$SOURCE[top]"; else SPEC="smolnugget[top] @ $SOURCE"; fi
-"$PREFIX/venv/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade "$SPEC" ||
-    die "pip install failed"
+$PIP install --quiet --upgrade "$SPEC" || die "pip install failed"
+# re-running the installer must always bring the latest code, even with an unchanged version
+$PIP install --quiet --force-reinstall --no-deps "$SPEC" || die "pip install failed"
 
 mkdir -p "$BIN"
 ln -sf "$PREFIX/venv/bin/snt" "$BIN/snt"

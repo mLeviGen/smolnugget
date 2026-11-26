@@ -62,7 +62,10 @@ if (-not (Test-Path $VenvPy)) {
 Say "installing smolnugget ($Ref)"
 & $VenvPy -m pip install --quiet --disable-pip-version-check --upgrade pip
 $Spec = if (Test-Path $Source -PathType Container) { "$Source[top]" } else { "smolnugget[top] @ $Source" }
-& $VenvPy -m pip install --quiet --disable-pip-version-check --upgrade $Spec
+& $VenvPy -m pip install --quiet --disable-pip-version-check --no-cache-dir --upgrade $Spec
+if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
+# re-running the installer must always bring the latest code, even with an unchanged version
+& $VenvPy -m pip install --quiet --disable-pip-version-check --no-cache-dir --force-reinstall --no-deps $Spec
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 New-Item -ItemType Directory -Force $Bin | Out-Null
