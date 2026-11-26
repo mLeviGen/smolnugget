@@ -1,0 +1,73 @@
+# Example .gitignore for a project deployed with smolnugget.
+# Copy it into YOUR app's repository as `.gitignore` and delete the sections you don't need.
+# (It is named app.gitignore here so it doesn't apply to the smolnugget repo itself.)
+#
+# Why it matters: on every update snt resets the checkout to the commit on GitHub.
+#   - files that git tracks are overwritten,
+#   - untracked files that are NOT ignored are deleted,
+#   - files matched by .gitignore are left alone.
+# So anything the app creates or needs at runtime (secrets, databases, uploads, caches)
+# must be ignored here, or it will be wiped on the next push.
+
+# --- secrets: keep them on the server, never in git ------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+config.local.*
+
+# --- runtime data the app writes ---------------------------------------------------
+data/
+storage/
+uploads/
+logs/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# --- Python ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- Node.js (bots, browser-extension backends) -------------------------------------
+node_modules/
+.npm/
+
+# --- Go ---------------------------------------------------------------------------------
+/bin/
+*.exe
+
+# --- Java / Kotlin (e.g. a Minecraft launcher server) -------------------------------
+target/
+build/
+.gradle/
+*.class
+# Minecraft server worlds and runtime files, if you run one from the repo
+world*/
+crash-reports/
+usercache.json
+banned-*.json
+ops.json
+whitelist.json
+
+# --- Dart -------------------------------------------------------------------------------
+.dart_tool/
+.packages
+build/
+
+# --- Docker -----------------------------------------------------------------------------
+# volumes bound into the project folder
+docker-data/
+
+# --- editors and OS ---------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
