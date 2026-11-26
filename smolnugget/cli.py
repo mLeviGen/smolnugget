@@ -8,6 +8,7 @@ import logging
 import logging.handlers
 import os
 import shlex
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -450,10 +451,22 @@ def cmd_web(args, store: Store) -> int:
         server = WebServer(store, args.host, args.port)
     except OSError as e:
         raise CliError(f"cannot listen on {args.host}:{args.port}: {e} (try --port)") from e
-    print(f"smolnugget web UI: {server.url}  (Ctrl+C to stop)")
+    print(f"smolnugget web UI: {server.url}  (Ctrl+C to stop)", flush=True)
     if args.open:
         import webbrowser
         webbrowser.open(server.url)
+    if args.exit_on_eof:  # started by `snt -r NAME web`: stop when the ssh session closes
+        import threading
+
+        def watch_stdin():
+            try:
+                while sys.stdin.buffer.read(4096):
+                    pass
+            except (OSError, ValueError):
+                pass
+            server.shutdown()
+
+        threading.Thread(target=watch_stdin, daemon=True).start()
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
@@ -461,6 +474,46 @@ def cmd_web(args, store: Store) -> int:
     finally:
         server.server_close()
     return 0
+
+
+def cmd_remote(args, store: Store) -> int:
+    from smolnugget import remote as rm
+    store = Store(None)  # saved servers live in the local default home
+    try:
+        remotes = rm.load_remotes(store)
+        if args.action == "list":
+            if not remotes:
+                print("no saved servers - add one: snt remote add NAME user@host --setup-key")
+            for r in remotes.values():
+                extra = "".join([f" -p {r.port}" if r.port else "", f"  key {r.key}" if r.key else ""])
+                print(f"{r.name:<16} {r.target}{extra}")
+            return 0
+        if args.action == "rm":
+            if remotes.pop(args.name, None) is None:
+                raise CliError(f"no saved server {args.name!r}")
+            rm.save_remotes(store, remotes)
+            print(f"removed {args.name!r} (its ssh key, if any, was left in place)")
+            return 0
+        # add
+        rm.check_name(args.name)
+        if args.target is None:
+            raise CliError("usage: snt remote add NAME user@host [--key PATH] [--port N]")
+        new = rm.Remote(args.name, args.target, args.port, args.key)
+        if args.setup_key:
+            new.key = rm.setup_key(new)
+        if not args.no_check:
+            res = subprocess.run(new.ssh_base() + [new.target, f"{rm.REMOTE_SNT} --version"],
+                                 capture_output=True, text=True)
+            if res.returncode != 0:
+                raise CliError(f"cannot run snt on {new.target}: {rm.explain(res.returncode)}"
+                               "\n(--no-check saves it anyway)")
+            print(f"{new.target}: {res.stdout.strip()}")
+        remotes[new.name] = new
+        rm.save_remotes(store, remotes)
+        print(f"saved {new.name!r}. Try:  snt -r {new.name} status   or   snt -r {new.name} web")
+        return 0
+    except rm.RemoteError as e:
+        raise CliError(str(e)) from e
 
 
 def cmd_service(args, store: Store) -> int:
@@ -518,6 +571,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="data directory (default: $SNT_HOME or ~/.smolnugget)")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     parser.add_argument("--log-file", help="also write snt's own log to this file (rotated)")
+    parser.add_argument("-r", "--remote", metavar="NAME",
+                        help="run the command on a saved server (see 'snt remote'); "
+                             "'snt -r NAME web' opens its dashboard here")
     sub = parser.add_subparsers(dest="cmd", metavar="COMMAND")
 
     def cmd(name, func, help, aliases=()):
@@ -555,6 +611,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="127.0.0.1",
                    help="address to listen on (default 127.0.0.1 - this computer only)")
     p.add_argument("-o", "--open", action="store_true", help="open it in the browser")
+    p.add_argument("--exit-on-eof", action="store_true", help=argparse.SUPPRESS)
+
+    p = cmd("remote", cmd_remote, "saved servers for `snt -r NAME ...`")
+    p.add_argument("action", choices=["add", "list", "rm"])
+    p.add_argument("name", nargs="?")
+    p.add_argument("target", nargs="?", help="user@host")
+    p.add_argument("-k", "--key", help="private key to log in with (default: your ssh config)")
+    p.add_argument("-p", "--port", type=int, help="ssh port (default 22)")
+    p.add_argument("--setup-key", action="store_true",
+                   help="create ~/.ssh/snt_NAME and install it on the server (asks the password once)")
+    p.add_argument("--no-check", action="store_true", help="save without testing the connection")
 
     p = cmd("logs", cmd_logs, "print an app's output")
     p.add_argument("name")
@@ -585,6 +652,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def run_on_remote(args, local: Store, argv: list[str]) -> int:
+    """`snt -r NAME CMD ...`: CMD runs on the saved server; `web` is tunnelled to here."""
+    from smolnugget import remote as rm
+    if args.func is cmd_remote:
+        raise CliError("'snt remote' manages the server list on this computer; drop -r")
+    try:
+        server = rm.get_remote(local, args.remote)
+        if args.func is cmd_web:
+            return rm.open_dashboard(server)
+        return rm.run_remote(server, rm.strip_remote_args(argv))
+    except rm.RemoteError as e:
+        raise CliError(str(e)) from e
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -594,6 +675,8 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(args.verbose, args.log_file, timestamps=args.func is cmd_run)
     store = Store(args.home)
     try:
+        if args.remote:
+            return run_on_remote(args, Store(None), sys.argv[1:] if argv is None else argv)
         return args.func(args, store)
     except (CliError, ConfigError, GitError) as e:
         print(f"error: {e}", file=sys.stderr)

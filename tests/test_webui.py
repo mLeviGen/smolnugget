@@ -59,6 +59,15 @@ class WebUITest(unittest.TestCase):
         self.assertIn("cpu_percent", data["apps"][0])
         self.assertFalse(data["daemon"]["running"])
 
+    def test_system(self):
+        resp, body = self.request("GET", "/api/system")
+        self.assertEqual(resp.status, 200)
+        data = json.loads(body)
+        for key in ("hostname", "os", "cpu_count", "cpu_percent", "memory", "disk", "uptime_seconds"):
+            self.assertIn(key, data)
+        self.assertGreater(data["disk"]["total"], 0)
+        self.assertEqual(self.request("GET", "/api/system", host="evil.example:1")[0].status, 403)
+
     def test_wrong_host_rejected(self):
         # DNS rebinding: evil.example resolving to 127.0.0.1
         resp, _ = self.request("GET", "/api/status", host=f"evil.example:{self.port}")

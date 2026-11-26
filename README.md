@@ -39,7 +39,7 @@ ihor_bot  running  41822  3h12m   0         56983e02  you/ihor_bot
 
 - [Install](#install) · [Quick start](#quick-start) · [Everyday commands](#everyday-commands)
 - [How it works](#how-it-works) · [App settings](#app-settings) · [Private repositories](#private-repositories)
-- [Web UI](#web-ui) · [Running on boot](#running-on-boot) · [Status for dashboards](#status-for-dashboards)
+- [Web UI](#web-ui) · [Remote servers](#remote-servers) · [Running on boot](#running-on-boot) · [Status for dashboards](#status-for-dashboards)
 - [Files](#files) · [Troubleshooting](#troubleshooting) · [Upgrading from 1.x](#upgrading-from-1x) · [Development](#development)
 
 ## Install
@@ -107,6 +107,7 @@ If nothing matches, pass `-c` to `snt add`.
 |---|---|
 | `snt status` | all apps at a glance (`ls` works too) |
 | `snt web -o` | local web dashboard at <http://localhost:8770> (see [Web UI](#web-ui)) |
+| `snt -r NAME web` | a saved server's dashboard, through SSH (see [Remote servers](#remote-servers)) |
 | `snt top` | live monitor: ↑/↓ select, `r` restart, `u` update now, `s` start/stop, `q` quit |
 | `snt logs NAME -f` | follow an app's output (`-n 200` for more history) |
 | `snt restart NAME` | restart now |
@@ -132,7 +133,8 @@ GitHub  ──fetch──►  apps/NAME/repo  ──setup──►  restart proc
 
 - **Updating** resets the checkout to the remote branch exactly. Local edits to tracked files and
   untracked files are discarded. Files in `.gitignore` (`.env`, `data/`, `*.db`) are kept, so
-  that is where runtime data belongs.
+  that is where runtime data belongs. [`examples/app.gitignore`](examples/app.gitignore) is a
+  starting point to copy into your app's repository.
 - **Setup** runs once per new commit, before the restart, while the old version is still running.
   If it fails, the old process keeps running and setup is retried on the next check.
 - **Starting.** The process runs inside its checkout folder, with `--env` variables,
@@ -190,7 +192,9 @@ snt web -p 9000  # another port
 A dark, single-page dashboard. The overview lists every app with its status, uptime, CPU and
 memory, and has buttons to check all apps for updates or show only the ones with problems.
 Each app has its own page with a live log, errors, version and settings, plus restart,
-stop/start and update buttons.
+stop/start and update buttons. The **System** page shows the host: CPU and memory with a
+3-minute history, disk space (with a warning past 80% / 90%), uptime, and how much CPU and
+memory each app takes. The ☰ button folds the sidebar down to icons.
 
 It needs no extra packages and works offline. It talks to the same files as the CLI, so run it
 next to `snt run` or the service; it does not run apps itself. CPU/memory appear when `psutil`
@@ -199,11 +203,28 @@ is installed (the `[top]` extra, included by the installers).
 **Security.** It listens on `127.0.0.1` only and has no login, so it is meant for this computer.
 Requests from other websites are refused: the `Host` header must name this server, and actions
 need an `X-Snt` header, which a foreign page cannot send without CORS, and CORS is never allowed.
-To look at a server's dashboard from your PC, use an SSH tunnel rather than `--host 0.0.0.0`:
+To look at a server's dashboard from your PC, don't use `--host 0.0.0.0`; use `snt -r` (below),
+which goes through an SSH tunnel.
+
+## Remote servers
+
+Save a server once, then run any command on it from your PC with `-r NAME`:
 
 ```sh
-ssh -L 8770:localhost:8770 you@server   # then open http://localhost:8770 locally
+snt remote add vps you@server --setup-key   # makes ~/.ssh/snt_vps and installs it (asks the password once)
+snt remote add vps you@server -k ~/.ssh/id_ed25519   # ...or use a key you already have
+
+snt -r vps web                          # the server's dashboard, opened here; Ctrl+C closes it
+snt -r vps status
+snt -r vps logs lettudio-bridge -f
+snt -r vps restart lettudio-bridge
+snt remote list / snt remote rm vps
 ```
+
+It uses your system `ssh` with key login: passwords are never stored, and the list lives in
+`~/.smolnugget/remotes.json` on your computer. `snt -r NAME web` picks a free port, tunnels it to
+the server, starts `snt web` there, and stops it again when you close the tunnel. The server
+needs snt installed (`snt` in `~/.local/bin`, as the installer puts it).
 
 ## Running on boot
 

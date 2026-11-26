@@ -2,6 +2,7 @@
 
 API (all JSON):
   GET  /api/status                      snapshot (same as `snt status --json`) + cpu/memory
+  GET  /api/system                      host metrics: cpu, memory, disk, load, uptime
   GET  /api/apps/<name>/logs?lines=N    last N lines of the app's output.log
   POST /api/apps/<name>/<action>        action: restart | update | start | stop
 
@@ -25,6 +26,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from smolnugget.config import ConfigError, Store
 from smolnugget.state import is_managed, send_control, snapshot
+from smolnugget.sysinfo import SystemInfo
 from smolnugget.top import Usage, tail
 
 log = logging.getLogger("snt.web")
@@ -127,6 +129,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(HTTPStatus.OK, self.server.status())
             except ConfigError as e:
                 return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
+        if url.path == "/api/system":
+            with self.server._usage_lock:
+                return self._json(HTTPStatus.OK, self.server.sysinfo.snapshot())
         m = APP_ROUTE.match(url.path)
         if m and m.group(2) == "logs":
             name = m.group(1)
@@ -181,6 +186,7 @@ class WebServer(ThreadingHTTPServer):
         self.page = Page()
         self._usage = Usage()
         self._usage_lock = threading.Lock()
+        self.sysinfo = SystemInfo(store.home)
         real_port = self.server_address[1]
         names = {host, "localhost", "127.0.0.1", "[::1]"} if host in ("127.0.0.1", "localhost", "::1") \
             else {host}
