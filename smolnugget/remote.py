@@ -6,8 +6,10 @@ Uses the system `ssh` client with key authentication; no passwords are stored.
 
 from __future__ import annotations
 
+import collections
 import json
 import random
+import secrets
 import shlex
 import shutil
 import socket
@@ -15,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 import webbrowser
 from dataclasses import asdict, dataclass
@@ -23,6 +26,8 @@ from pathlib import Path
 from smolnugget.config import ConfigError, Store, validate_name, write_atomic
 
 REMOTE_SNT = 'PATH="$HOME/.local/bin:$PATH"; exec snt'
+KEEPALIVE = 15  # seconds between pings through a tunnel
+IDLE_EXIT = 90  # snt web on the server exits after this long without any request
 
 
 class RemoteError(Exception):
@@ -112,83 +117,158 @@ def _free_port() -> int:
     raise RemoteError("no free local port found")
 
 
-def _wait_ready(port: int, proc: subprocess.Popen, timeout: float = 30) -> bool:
-    """Wait for snt web on the server to report it listens, then check through the tunnel.
+class Tunnel:
+    """`snt web` on a server, reachable here through an ssh port forward.
 
-    Probing the tunnel before the server side listens makes ssh print
-    "channel N: open failed", so the first wait is on the server's own startup line.
+    * The same port number is used on both ends: snt web only answers requests whose
+      Host header names its own port.
+    * The access token goes to the server over stdin, never on its command line (which
+      other users there could read with `ps`); closing stdin makes the server side exit.
+    * Before probing the forward we wait for the server's own "web UI:" line - probing
+      earlier makes ssh print "channel N: open failed".
     """
-    deadline = time.monotonic() + timeout
-    started = threading.Event()
 
-    def read_stdout():
-        for line in proc.stdout:
-            if b"web UI:" in line:
-                started.set()
-        started.set()  # EOF: the remote side exited; poll() below notices
+    def __init__(self, remote: Remote):
+        self.remote = remote
+        self.token = secrets.token_urlsafe(24)
+        self.port: int | None = None
+        self.proc: subprocess.Popen | None = None
+        self._err: collections.deque[str] = collections.deque(maxlen=20)
 
-    threading.Thread(target=read_stdout, daemon=True).start()
-    if not started.wait(timeout) or proc.poll() is not None:
-        return False
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            return False
+    def alive(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def start(self, timeout: float = 30) -> None:
+        last = "could not start the dashboard on the server"
+        for _ in range(3):
+            self.close()
+            self.port = _free_port()
+            cmd = self.remote.ssh_base() + [
+                "-o", "ExitOnForwardFailure=yes", "-L", f"{self.port}:127.0.0.1:{self.port}",
+                self.remote.target,
+                f"{REMOTE_SNT} web --port {self.port} --token-stdin --exit-on-eof "
+                f"--idle-exit {IDLE_EXIT}",
+            ]
+            self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE)
+            self._err.clear()
+            # always drain stderr: a full pipe would block the server side
+            threading.Thread(target=self._drain_stderr, args=(self.proc,), daemon=True).start()
+            try:
+                self.proc.stdin.write(self.token.encode() + b"\n")
+                self.proc.stdin.flush()
+            except OSError:
+                pass
+            if self._wait_ready(timeout):
+                threading.Thread(target=self._keepalive, args=(self.proc,), daemon=True).start()
+                return
+            code = self.proc.poll()
+            err = self._stderr_tail()
+            if code is None:
+                self.close()
+                raise RemoteError("the dashboard did not start on the server within "
+                                  f"{timeout:.0f} s")
+            if code in (255, 127):
+                raise RemoteError(explain(code))
+            if "unrecognized arguments" in err or "invalid choice" in err:
+                raise RemoteError("snt on the server is too old for this; update it "
+                                  "(re-run install.sh there)")
+            last = err.splitlines()[-1] if err else last  # e.g. the port is taken: retry
+        raise RemoteError(last)
+
+    def _drain_stderr(self, proc: subprocess.Popen) -> None:
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=2) as r:
-                if r.status == 200:
-                    return True
+            for line in proc.stderr:
+                self._err.append(line.decode(errors="replace").rstrip())
+        except (OSError, ValueError):
+            pass
+
+    def _stderr_tail(self) -> str:
+        time.sleep(0.2)  # let the drain thread catch the last lines
+        return "\n".join(self._err).strip()
+
+    def _wait_ready(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        started = threading.Event()
+        proc = self.proc
+
+        def read_stdout():
+            for line in proc.stdout:
+                if b"web UI:" in line:
+                    started.set()
+            started.set()  # EOF: the server side exited; poll() notices
+
+        threading.Thread(target=read_stdout, daemon=True).start()
+        if not started.wait(timeout) or proc.poll() is not None:
+            return False
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                return False
+            code, _ = self.request("GET", "/api/status", timeout=3)
+            if code == 200:
+                return True
+            if code == 401:  # token mismatch: the server side is not ours
+                return False
+            time.sleep(0.4)
+        return False
+
+    def request(self, method: str, path: str, timeout: float = 10) -> tuple[int, bytes]:
+        """HTTP to the server's snt web; (status, body), status 0 when unreachable."""
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", method=method,
+            headers={"Authorization": f"Bearer {self.token}", "X-Snt": "1"},
+            data=b"" if method == "POST" else None)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+        except OSError:
+            return 0, b""
+
+    def _keepalive(self, proc: subprocess.Popen) -> None:
+        # the server side exits after IDLE_EXIT s without requests, so a tunnel whose
+        # client vanished silently can't leave snt web running there forever
+        while proc is self.proc and proc.poll() is None:
+            time.sleep(KEEPALIVE)
+            if proc is self.proc and proc.poll() is None:
+                self.request("GET", "/api/ping", timeout=10)
+
+    def diagnose(self) -> str:
+        """Why the tunnel is down: exit code and the last lines ssh / snt web printed."""
+        code = self.proc.poll() if self.proc else None
+        tail = self._stderr_tail().splitlines()[-3:]
+        return f"exit code {code}" + (": " + " | ".join(tail) if tail else "")
+
+    def close(self) -> None:
+        proc, self.proc = self.proc, None
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            proc.stdin.close()  # EOF tells snt web on the server to exit
         except OSError:
             pass
-        time.sleep(0.4)
-    return False
+        try:
+            proc.wait(5)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            proc.wait()
 
 
 def open_dashboard(remote: Remote, open_browser: bool = True) -> int:
-    """Tunnel to the server, start `snt web` there, open it locally; Ctrl+C closes both.
-
-    The same port number is used on both ends because snt web only answers requests whose
-    Host header names its own port.
-    """
-    for attempt in range(3):
-        port = _free_port()
-        cmd = remote.ssh_base() + [
-            "-o", "ExitOnForwardFailure=yes", "-L", f"{port}:127.0.0.1:{port}", remote.target,
-            f"{REMOTE_SNT} web --port {port} --exit-on-eof",
-        ]
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-        if _wait_ready(port, proc):
-            break
-        code = proc.poll()
-        if code is None:
-            proc.kill()
-            proc.wait()
-            raise RemoteError("the dashboard did not start on the server within 30 s")
-        if code in (255, 127):
-            raise RemoteError(explain(code))
-        # port taken on the server, or an old snt without --exit-on-eof: try again
-    else:
-        raise RemoteError("could not start the dashboard on the server "
-                          "(is snt there up to date? reinstall it with install.sh)")
-
-    url = f"http://localhost:{port}/"
+    """Tunnel to the server, start `snt web` there, open it locally; Ctrl+C closes both."""
+    tunnel = Tunnel(remote)
+    tunnel.start()
+    url = f"http://localhost:{tunnel.port}/?t={tunnel.token}"
     print(f"{remote.name}: dashboard at {url}  (Ctrl+C to close)", flush=True)
     if open_browser:
         webbrowser.open(url)
     try:
-        proc.wait()
+        tunnel.proc.wait()
     except KeyboardInterrupt:
         pass
     finally:
-        if proc.poll() is None:
-            try:
-                proc.stdin.close()  # EOF tells snt web on the server to exit
-            except OSError:
-                pass
-            try:
-                proc.wait(5)
-            except subprocess.TimeoutExpired:
-                proc.terminate()
-                proc.wait()
+        tunnel.close()
     return 0
 
 
@@ -243,4 +323,6 @@ def strip_remote_args(argv: list[str]) -> list[str]:
 
 
 def check_name(name: str) -> str:
+    if name == "local":
+        raise RemoteError("'local' is reserved for this computer; pick another name")
     return validate_name(name)

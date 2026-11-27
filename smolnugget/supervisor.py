@@ -465,6 +465,7 @@ class Daemon:
             signal.signal(signal.SIGHUP, self.request_stop)
 
     def _acquire_initial(self) -> None:
+        self.store.secure()
         if self.names is None:
             self._daemon_lock = FileLock(self.store.daemon_lock_path)
             if not self._daemon_lock.acquire():

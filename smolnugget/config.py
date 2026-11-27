@@ -179,7 +179,17 @@ class Store:
             "version": CONFIG_VERSION,
             "apps": {name: app.to_dict() for name, app in sorted(apps.items())},
         }
-        write_atomic(self.config_path, json.dumps(data, indent=2) + "\n")
+        # private: --env values may hold secrets
+        write_atomic(self.config_path, json.dumps(data, indent=2) + "\n", private=True)
+        self.secure()
+
+    def secure(self) -> None:
+        """Make the home directory private (logs, state and checkouts live here)."""
+        if sys.platform != "win32" and self.home.is_dir():
+            try:
+                os.chmod(self.home, 0o700)
+            except OSError:
+                pass
 
     def get(self, name: str) -> AppConfig:
         apps = self.load()

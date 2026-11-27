@@ -108,6 +108,7 @@ If nothing matches, pass `-c` to `snt add`.
 | `snt status` | all apps at a glance (`ls` works too) |
 | `snt web -o` | local web dashboard at <http://localhost:8770> (see [Web UI](#web-ui)) |
 | `snt -r NAME web` | a saved server's dashboard, through SSH (see [Remote servers](#remote-servers)) |
+| `snt hub -o` | one dashboard for all saved servers ([details](#one-dashboard-for-every-server-snt-hub)) |
 | `snt top` | live monitor: ↑/↓ select, `r` restart, `u` update now, `s` start/stop, `q` quit |
 | `snt logs NAME -f` | follow an app's output (`-n 200` for more history) |
 | `snt restart NAME` | restart now |
@@ -184,8 +185,8 @@ SSH works too: use a `git@github.com:you/repo.git` URL with a
 ## Web UI
 
 ```sh
-snt web          # http://localhost:8770, Ctrl+C to stop
-snt web -o       # ...and open it in the browser
+snt web          # prints http://localhost:8770/?t=<key>; Ctrl+C to stop
+snt web -o       # ...and opens it in the browser
 snt web -p 9000  # another port
 ```
 
@@ -200,31 +201,64 @@ It needs no extra packages and works offline. It talks to the same files as the 
 next to `snt run` or the service; it does not run apps itself. CPU/memory appear when `psutil`
 is installed (the `[top]` extra, included by the installers).
 
-**Security.** It listens on `127.0.0.1` only and has no login, so it is meant for this computer.
-Requests from other websites are refused: the `Host` header must name this server, and actions
-need an `X-Snt` header, which a foreign page cannot send without CORS, and CORS is never allowed.
-To look at a server's dashboard from your PC, don't use `--host 0.0.0.0`; use `snt -r` (below),
-which goes through an SSH tunnel.
+**Security.**
+- It listens on `127.0.0.1` only.
+- Every run makes a random **access key** and prints it in the link (`?t=…`). The page keeps it
+  and removes it from the address bar; without it the API answers 401, so other users and
+  programs on the same machine can't drive your apps. After a restart, use the new link.
+- Requests from other websites are refused: the `Host` header must name this server, and
+  actions need an `X-Snt` header that a foreign page can't send (CORS is never allowed).
+- To look at a server's dashboard from your PC, don't use `--host 0.0.0.0`; use `snt -r NAME web`
+  or `snt hub` (below), which go through SSH.
 
 ## Remote servers
 
-Save a server once, then run any command on it from your PC with `-r NAME`:
+Save a server once, then work with it from your PC by name:
 
 ```sh
 snt remote add vps you@server --setup-key   # makes ~/.ssh/snt_vps and installs it (asks the password once)
 snt remote add vps you@server -k ~/.ssh/id_ed25519   # ...or use a key you already have
 
-snt -r vps web                          # the server's dashboard, opened here; Ctrl+C closes it
-snt -r vps status
+snt -r vps status                       # any snt command, run on that server
+snt -r vps add https://github.com/you/bot
 snt -r vps logs lettudio-bridge -f
-snt -r vps restart lettudio-bridge
+snt -r vps web                          # that server's dashboard, opened here
 snt remote list / snt remote rm vps
 ```
 
 It uses your system `ssh` with key login: passwords are never stored, and the list lives in
-`~/.smolnugget/remotes.json` on your computer. `snt -r NAME web` picks a free port, tunnels it to
-the server, starts `snt web` there, and stops it again when you close the tunnel. The server
-needs snt installed (`snt` in `~/.local/bin`, as the installer puts it).
+`~/.smolnugget/remotes.json` on your computer. A key with a passphrase works if it is loaded in
+`ssh-agent`. The server needs snt installed (in `~/.local/bin`, as the installer puts it).
+
+### One dashboard for every server: `snt hub`
+
+```sh
+snt hub -o                 # every saved server (+ this computer, if it runs apps)
+snt hub --only vps,gcp     # just some of them
+```
+
+The hub opens one SSH tunnel per server, starts `snt web` there (its access key goes over the
+tunnel's stdin, never on the server's command line), and shows everything in one place: all apps
+with the server they run on, one page per server with its CPU / memory / disk, and the same
+buttons as `snt web`. A server that drops off is shown as offline and reconnected automatically.
+Closing the hub closes the tunnels; `snt web` on a server also exits by itself after 90 s
+without requests, so nothing is left running there if a connection dies silently.
+
+### How it fits together
+
+```
+your PC                                   each server
+─────────────────────                     ──────────────────────────────────────
+snt remote add NAME user@host             install.sh                (once)
+snt -r NAME add <github url>   ── ssh ──► snt add  -> clones, detects the command
+                                          snt service install       (once; runs snt run)
+snt hub -o                     ── ssh ──► snt web  (temporary, through the tunnel)
+  browser: all servers & apps
+git push ─► GitHub ─────────────────────► snt run notices the commit, updates, restarts
+```
+
+You never copy the repository yourself: `snt add` clones it on the server, and after that every
+push is picked up automatically. The PC only needs snt to *look* (`snt hub`, `snt -r ...`).
 
 ## Running on boot
 
@@ -252,7 +286,7 @@ never included. Times are ISO 8601 UTC.
 ```json
 {
   "schema": 1,
-  "smolnugget": "2.1.0",
+  "smolnugget": "2.2.0",
   "generated_at": "2026-11-22T20:15:00+00:00",
   "daemon": { "running": true, "pid": 4100, "started_at": "2026-11-22T08:00:02+00:00" },
   "apps": [

@@ -27,6 +27,12 @@ class ConfigTest(unittest.TestCase):
         self.store.save({"bot": app})
         self.assertEqual(self.store.load()["bot"], app)
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX permissions")
+    def test_config_and_home_are_private(self):
+        self.store.save({"bot": make(env={"API_KEY": "x"})})
+        self.assertEqual(self.store.config_path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.store.home.stat().st_mode & 0o777, 0o700)
+
     def test_empty_home(self):
         self.assertEqual(self.store.load(), {})
 

@@ -442,20 +442,14 @@ def cmd_sync(args, store: Store) -> int:
     return 0
 
 
-def cmd_web(args, store: Store) -> int:
-    from smolnugget.webui import WebServer
-    if args.host not in ("127.0.0.1", "localhost", "::1"):
-        log.warning("serving on %s: anyone who can reach this address can restart and stop "
-                    "your apps - there is no login", args.host)
-    try:
-        server = WebServer(store, args.host, args.port)
-    except OSError as e:
-        raise CliError(f"cannot listen on {args.host}:{args.port}: {e} (try --port)") from e
-    print(f"smolnugget web UI: {server.url}  (Ctrl+C to stop)", flush=True)
-    if args.open:
+def serve(server, open_browser: bool, exit_on_eof: bool = False, what: str = "web UI",
+          idle_exit: int = 0) -> int:
+    """Run a WebServer until Ctrl+C (or, for tunnels, until stdin closes)."""
+    print(f"smolnugget {what}: {server.login_url}  (Ctrl+C to stop)", flush=True)
+    if open_browser:
         import webbrowser
-        webbrowser.open(server.url)
-    if args.exit_on_eof:  # started by `snt -r NAME web`: stop when the ssh session closes
+        webbrowser.open(server.login_url)
+    if exit_on_eof:  # started through an ssh tunnel: stop when the session closes
         import threading
 
         def watch_stdin():
@@ -467,6 +461,18 @@ def cmd_web(args, store: Store) -> int:
             server.shutdown()
 
         threading.Thread(target=watch_stdin, daemon=True).start()
+    if idle_exit:  # a tunnel whose client vanished without closing the connection
+        import threading
+
+        def watch_idle():
+            while True:
+                time.sleep(min(5, idle_exit / 2))
+                if time.monotonic() - server.last_request > idle_exit:
+                    log.info("no requests for %ss, exiting", idle_exit)
+                    server.shutdown()
+                    return
+
+        threading.Thread(target=watch_idle, daemon=True).start()
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
@@ -474,6 +480,59 @@ def cmd_web(args, store: Store) -> int:
     finally:
         server.server_close()
     return 0
+
+
+def warn_public(host: str) -> None:
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        log.warning("serving on %s: anyone who can reach this address and has the link can "
+                    "restart and stop your apps; prefer 127.0.0.1 and an ssh tunnel", host)
+
+
+def cmd_web(args, store: Store) -> int:
+    from smolnugget.webui import LocalSource, WebServer
+    warn_public(args.host)
+    token = None
+    if args.token_stdin:  # `snt -r NAME web` / `snt hub` pass the token here, not in argv
+        token = sys.stdin.buffer.readline().decode().strip() or None
+        if not token:
+            raise CliError("--token-stdin: no token on stdin")
+    try:
+        server = WebServer([LocalSource(store)], args.host, args.port, token=token)
+    except OSError as e:
+        raise CliError(f"cannot listen on {args.host}:{args.port}: {e} (try --port)") from e
+    return serve(server, args.open, args.exit_on_eof, idle_exit=args.idle_exit)
+
+
+def cmd_hub(args, store: Store) -> int:
+    from smolnugget import remote as rm
+    from smolnugget.hub import RemoteSource
+    from smolnugget.webui import LocalSource, WebServer
+    warn_public(args.host)
+    try:
+        remotes = rm.load_remotes(Store(None))
+    except ConfigError as e:
+        raise CliError(str(e)) from e
+    if args.only:
+        wanted = [n.strip() for n in args.only.split(",") if n.strip()]
+        if missing := [n for n in wanted if n not in remotes and n != "local"]:
+            raise CliError(f"unknown server(s): {', '.join(missing)} (see 'snt remote list')")
+        remotes = {n: r for n, r in remotes.items() if n in wanted}
+    sources = []
+    has_local_apps = store.config_path.exists() and bool(store.load())
+    if (has_local_apps and not args.only) or (args.only and "local" in args.only.split(",")):
+        sources.append(LocalSource(store))
+    sources += [RemoteSource(r) for r in remotes.values()]
+    if not sources:
+        raise CliError("nothing to show: add a server first - snt remote add NAME user@host")
+    try:
+        server = WebServer(sources, args.host, args.port, hub=True)
+    except OSError as e:
+        for s in sources:
+            s.close()
+        raise CliError(f"cannot listen on {args.host}:{args.port}: {e} (try --port)") from e
+    names = ", ".join(s.name for s in sources)
+    print(f"servers: {names}  (connecting through ssh in the background)", flush=True)
+    return serve(server, args.open, what="hub")
 
 
 def cmd_remote(args, store: Store) -> int:
@@ -612,6 +671,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="address to listen on (default 127.0.0.1 - this computer only)")
     p.add_argument("-o", "--open", action="store_true", help="open it in the browser")
     p.add_argument("--exit-on-eof", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--token-stdin", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--idle-exit", type=int, default=0, help=argparse.SUPPRESS)
+
+    p = cmd("hub", cmd_hub, "one dashboard for all saved servers (see 'snt remote')")
+    p.add_argument("-p", "--port", type=int, default=8770, help="port (default 8770)")
+    p.add_argument("--host", default="127.0.0.1", help="address to listen on (default 127.0.0.1)")
+    p.add_argument("-o", "--open", action="store_true", help="open it in the browser")
+    p.add_argument("--only", metavar="NAMES", help="comma-separated servers to show ('local' = this computer)")
 
     p = cmd("remote", cmd_remote, "saved servers for `snt -r NAME ...`")
     p.add_argument("action", choices=["add", "list", "rm"])
@@ -655,8 +722,9 @@ def build_parser() -> argparse.ArgumentParser:
 def run_on_remote(args, local: Store, argv: list[str]) -> int:
     """`snt -r NAME CMD ...`: CMD runs on the saved server; `web` is tunnelled to here."""
     from smolnugget import remote as rm
-    if args.func is cmd_remote:
-        raise CliError("'snt remote' manages the server list on this computer; drop -r")
+    if args.func in (cmd_remote, cmd_hub):
+        raise CliError("'snt remote' and 'snt hub' work with the server list on this computer; "
+                       "drop -r")
     try:
         server = rm.get_remote(local, args.remote)
         if args.func is cmd_web:
@@ -672,7 +740,7 @@ def main(argv: list[str] | None = None) -> int:
     if not getattr(args, "func", None):
         parser.print_help()
         return 2
-    setup_logging(args.verbose, args.log_file, timestamps=args.func is cmd_run)
+    setup_logging(args.verbose, args.log_file, timestamps=args.func in (cmd_run, cmd_hub))
     store = Store(args.home)
     try:
         if args.remote:

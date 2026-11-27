@@ -88,6 +88,9 @@ svg.i { width: 22px; height: 22px; fill: currentColor; flex: none; }
   border: 2px solid var(--panel); box-shadow: none;
 }
 .nav-item.active .nav-cover .dot { border-color: var(--selected); }
+.nav-cover.srv { background: var(--panel-2); color: var(--muted); }
+.nav-cover.srv svg.i { width: 16px; height: 16px; }
+.nav-item.active .nav-cover.srv { color: var(--text); }
 /* burger on wide screens: icons only */
 .app { transition: grid-template-columns .18s ease; }
 .app.collapsed { grid-template-columns: 82px 1fr; }
@@ -156,6 +159,7 @@ h1 { font-size: 26px; font-weight: 500; margin: 0; letter-spacing: .2px; overflo
   margin-top: 40px; padding: 36px; border-radius: var(--radius); background: var(--panel);
   color: var(--muted); max-width: 640px;
 }
+.empty > svg.i { width: 36px; height: 36px; color: var(--accent); margin-bottom: 8px; }
 .empty h2 { color: var(--text); font-weight: 500; font-size: 20px; margin: 0 0 8px; }
 code, .code {
   font-family: var(--mono); font-size: 13px; background: var(--bg); color: var(--accent);
@@ -266,7 +270,7 @@ code, .code {
 <div class="app" id="app">
   <header class="topbar">
     <button class="icon-btn" id="menuBtn" title="Меню" aria-label="Меню"></button>
-    <span class="brand">smolnugget</span>
+    <span class="brand" id="brand">smolnugget</span>
     <span class="spacer"></span>
     <span class="chip" id="daemonChip"></span>
   </header>
@@ -290,37 +294,48 @@ const ICONS = {
   warn: "M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z",
   info: "M11 7h2v2h-2zm0 4h2v6h-2zm1-9a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16z",
   server: "M20 13H4a1 1 0 00-1 1v6a1 1 0 001 1h16a1 1 0 001-1v-6a1 1 0 00-1-1zM7 19a2 2 0 110-4 2 2 0 010 4zM20 3H4a1 1 0 00-1 1v6a1 1 0 001 1h16a1 1 0 001-1V4a1 1 0 00-1-1zM7 9a2 2 0 110-4 2 2 0 010 4z",
+  lock: "M18 8h-1V6a5 5 0 00-10 0v2H6a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V10a2 2 0 00-2-2zm-6 9a2 2 0 110-4 2 2 0 010 4zm3.1-9H8.9V6a3.1 3.1 0 016.2 0v2z",
 };
 const icon = (n, cls = "i") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[n]}"/></svg>`;
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const enc = encodeURIComponent;
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("snt." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem("snt." + k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem("snt." + k); } catch {} },
 };
+
+/* access token: arrives once as ?t=..., kept per address, removed from the address bar */
+const TOKEN_KEY = "token:" + location.host;
+(function takeToken() {
+  const params = new URLSearchParams(location.search);
+  const t = params.get("t");
+  if (t) {
+    store.set(TOKEN_KEY, t);
+    history.replaceState(null, "", location.pathname + location.hash);
+  }
+})();
 
 const STATUS = { running: "работает", waiting: "ожидает", stopped: "остановлено", disabled: "выключено" };
 const SORTS = [["name", "имя"], ["status", "статус"], ["uptime", "время работы"]];
 const S = {
-  snap: null, error: null,
+  snap: null, error: null, auth: true,
   sort: store.get("sort", "name"), problemsOnly: false,
   current: store.get("current", null),
   logs: [], logsFor: null, follow: true, detailFor: null,
+  sys: {}, sysError: {},
 };
 
 /* helpers ---------------------------------------------------------------- */
 function hue(name) { let h = 0; for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % 360; }
-function cover(name, cls = "") {
-  const h = hue(name);
-  const letters = (name.replace(/[^A-Za-zА-Яа-я0-9]+/g, " ").trim().split(" ").map((w) => w[0]).join("").slice(0, 2) || name.slice(0, 2)).toUpperCase();
-  return `<div class="cover ${cls}" style="background:linear-gradient(135deg,hsl(${h} 55% 62%),hsl(${(h + 40) % 360} 50% 34%))">${esc(letters)}</div>`;
+function initials(name) {
+  return (name.replace(/[^A-Za-zА-Яа-я0-9]+/g, " ").trim().split(" ").map((w) => w[0]).join("").slice(0, 2) || name.slice(0, 2)).toUpperCase();
 }
-function miniCover(a) {
-  const h = hue(a.name);
-  const letters = (a.name.replace(/[^A-Za-zА-Яа-я0-9]+/g, " ").trim().split(" ").map((w) => w[0]).join("").slice(0, 2) || a.name.slice(0, 2)).toUpperCase();
-  return `<span class="nav-cover" style="background:linear-gradient(135deg,hsl(${h} 55% 62%),hsl(${(h + 40) % 360} 50% 34%))">${esc(letters)}<span class="dot ${statusDot(a)}"></span></span>`;
-}
+function grad(name) { const h = hue(name); return `linear-gradient(135deg,hsl(${h} 55% 62%),hsl(${(h + 40) % 360} 50% 34%))`; }
+function cover(name, cls = "") { return `<div class="cover ${cls}" style="background:${grad(name)}">${esc(initials(name))}</div>`; }
+function miniCover(a) { return `<span class="nav-cover" style="background:${grad(a.name)}">${esc(initials(a.name))}<span class="dot ${statusDot(a)}"></span></span>`; }
 function plural(n, one, few, many) {
   const m10 = n % 10, m100 = n % 100;
   return m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many;
@@ -333,7 +348,6 @@ function dur(s) {
   if (m) return `${m} мин`;
   return `${s} с`;
 }
-function clock(s) { s = Math.max(0, Math.round(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
 function bytes(n) { if (n == null) return ""; const u = ["Б", "КБ", "МБ", "ГБ"]; let i = 0; while (n >= 1024 && i < 3) { n /= 1024; i++; } return `${n.toFixed(n < 10 && i ? 1 : 0)} ${u[i]}`; }
 function ago(iso) {
   if (!iso) return "никогда";
@@ -345,46 +359,63 @@ function shortRepo(url) {
   if (gh) return gh[1];
   return url.replace(/[\\/]+$/, "").split(/[\\/:]/).pop().replace(/\.git$/, "");
 }
+
+/* servers & apps */
+function servers() { return S.snap ? S.snap.servers : []; }
+function server(name) { return servers().find((s) => s.name === name); }
+function multi() { return servers().length > 1 || (S.snap && S.snap.hub); }
+function serverTitle(s) { return s.name === "local" ? (s.label || "этот компьютер") : s.name; }
 function apps() { return S.snap ? S.snap.apps : []; }
-function app(name) { return apps().find((a) => a.name === name); }
+function key(a) { return `${a.server}/${a.name}`; }
+function app(srv, name) { return apps().find((a) => a.server === srv && a.name === name); }
+function daemonUp(srv) { const s = server(srv); return !!(s && s.daemon && s.daemon.running); }
 function isProblem(a) { return !!a.last_error || a.status === "waiting" || (a.status === "stopped" && a.enabled); }
 function statusDot(a) { return a.last_error ? "error" : a.status; }
+function serverDot(s) { return s.state !== "online" ? (s.state === "connecting" ? "waiting" : "error") : s.daemon && s.daemon.running ? "running" : "waiting"; }
+function appHash(a) { return `#/app/${enc(a.server)}/${enc(a.name)}`; }
+
 function route() {
-  if (location.hash === "#/system") return { view: "system" };
-  const m = location.hash.match(/^#\/app\/(.+)$/);
-  return m ? { view: "app", name: decodeURIComponent(m[1]) } : { view: "home" };
+  let m = location.hash.match(/^#\/system(?:\/(.+))?$/);
+  if (m) return { view: "system", server: m[1] ? decodeURIComponent(m[1]) : null };
+  m = location.hash.match(/^#\/app\/([^/]+)\/(.+)$/);
+  if (m) return { view: "app", server: decodeURIComponent(m[1]), name: decodeURIComponent(m[2]) };
+  return { view: "home" };
 }
 function go(hash) { if (location.hash !== hash) location.hash = hash; else render(); }
 
 /* api -------------------------------------------------------------------- */
 async function api(path, opts = {}) {
-  const r = await fetch(path, opts);
+  const headers = Object.assign({ Authorization: "Bearer " + store.get(TOKEN_KEY, "") }, opts.headers || {});
+  const r = await fetch(path, Object.assign({}, opts, { headers }));
   let data = null;
   try { data = await r.json(); } catch {}
+  if (r.status === 401) { S.auth = false; store.del(TOKEN_KEY); }
   if (!r.ok) { const e = new Error((data && data.error) || `HTTP ${r.status}`); e.status = r.status; throw e; }
+  S.auth = true;
   return data;
 }
 const ACT_TEXT = { restart: "перезапуск", update: "проверка обновлений", start: "запуск", stop: "остановка" };
-async function act(name, action, quiet) {
-  if (!S.snap.daemon.running && action !== "stop" && action !== "start") {
-    return toast("Демон snt не запущен. Запустите его: snt run", true);
+async function act(srv, name, action, quiet) {
+  const label = multi() ? `${name} (${srv})` : name;
+  if (!daemonUp(srv) && action !== "stop" && action !== "start") {
+    return toast(`Демон snt на ${srv === "local" ? "этом компьютере" : srv} не запущен: snt run или snt service install`, true);
   }
   try {
-    await api(`/api/apps/${encodeURIComponent(name)}/${action}`, { method: "POST", headers: { "X-Snt": "1" } });
+    await api(`/api/s/${enc(srv)}/apps/${enc(name)}/${action}`, { method: "POST", headers: { "X-Snt": "1" } });
     if (!quiet) {
-      let msg = `${name}: ${ACT_TEXT[action]}`;
-      if (action === "start" && !S.snap.daemon.running) msg += " — запустится вместе с демоном (snt run)";
+      let msg = `${label}: ${ACT_TEXT[action]}`;
+      if (action === "start" && !daemonUp(srv)) msg += " — запустится вместе с демоном";
       toast(msg);
     }
   } catch (e) {
-    toast(e.status === 409 ? `${name} сейчас не работает — включите его или запустите snt run` : `Ошибка: ${e.message}`, true);
+    toast(e.status === 409 ? `${label} сейчас не работает — включите его или запустите демон` : `Ошибка: ${e.message}`, true);
   }
   setTimeout(poll, 300);
 }
 async function updateAll() {
   const live = apps().filter((a) => a.status === "running" || a.status === "waiting");
   if (!live.length) return toast("Нет работающих приложений", true);
-  await Promise.all(live.map((a) => act(a.name, "update", true)));
+  await Promise.all(live.map((a) => act(a.server, a.name, "update", true)));
   toast(`Проверка обновлений: ${live.length} ${plural(live.length, "приложение", "приложения", "приложений")}`);
 }
 let toastTimer;
@@ -403,14 +434,14 @@ function patch(el, html) {
 function patchList(box, items) {
   const old = new Map([...box.children].map((c) => [c.dataset.key, c]));
   let prev = null;
-  for (const { key, html } of items) {
-    let el = old.get(key);
-    old.delete(key);
+  for (const { key: k, html } of items) {
+    let el = old.get(k);
+    old.delete(k);
     if (!el || el.__html !== html) {
       const tpl = document.createElement("template");
       tpl.innerHTML = html.trim();
       const fresh = tpl.content.firstElementChild;
-      fresh.dataset.key = key; fresh.__html = html;
+      fresh.dataset.key = k; fresh.__html = html;
       const hadFocus = el && el.contains(document.activeElement);
       const focusSel = hadFocus && document.activeElement.matches("[data-act]") ? "[data-act]" : null;
       if (el) el.replaceWith(fresh);
@@ -427,30 +458,49 @@ function setMain(mode, skeleton) {
   if (S.mainMode !== mode) { S.mainMode = mode; const m = $("#main"); m.__html = null; m.innerHTML = skeleton; return true; }
   return false;
 }
+
 function renderChrome() {
   patch($("#menuBtn"), icon("menu"));
-  const d = S.snap && S.snap.daemon;
-  patch($("#daemonChip"), S.error
-    ? `<span class="dot error"></span><span class="chip-text">нет связи с snt web</span>`
-    : !d ? "" : d.running
+  let chip = "";
+  if (S.error) chip = `<span class="dot error"></span><span class="chip-text">нет связи с snt</span>`;
+  else if (S.snap && multi()) {
+    const all = servers(), up = all.filter((s) => s.state === "online").length;
+    chip = `<span class="dot ${up === all.length ? "running" : up ? "waiting" : "error"}"></span><span class="chip-text">на связи ${up} из ${all.length} ${plural(all.length, "сервера", "серверов", "серверов")}</span>`;
+  } else if (S.snap && servers()[0]) {
+    const d = servers()[0].daemon;
+    chip = d && d.running
       ? `<span class="dot running"></span><span class="chip-text">демон работает · pid ${d.pid}</span>`
-      : `<span class="dot waiting"></span><span class="chip-text">демон не запущен</span>`);
+      : `<span class="dot waiting"></span><span class="chip-text">демон не запущен</span>`;
+  }
+  patch($("#daemonChip"), chip);
+  patch($("#brand"), S.snap && S.snap.hub ? "smolnugget · хаб" : "smolnugget");
 }
 
 function renderSidebar() {
   const r = route();
-  let html = `<button class="nav-item ${r.view === "home" ? "active" : ""}" data-go="#/" title="Обзор">${icon("home")}<span class="nav-text">Обзор</span></button>
-    <button class="nav-item ${r.view === "system" ? "active" : ""}" data-go="#/system" title="Система">${icon("gauge")}<span class="nav-text">Система</span></button>`;
+  let html = `<button class="nav-item ${r.view === "home" ? "active" : ""}" data-go="#/" title="Обзор">${icon("home")}<span class="nav-text">Обзор</span></button>`;
+  if (multi()) {
+    html += `<div class="nav-sep"></div><div class="nav-label">Серверы</div>`;
+    for (const s of servers()) {
+      const active = r.view === "system" && r.server === s.name;
+      html += `<button class="nav-item ${active ? "active" : ""}" data-go="#/system/${enc(s.name)}" title="${esc(serverTitle(s))} — ${s.state === "online" ? "на связи" : "нет связи"}"><span class="nav-cover srv">${icon("server")}<span class="dot ${serverDot(s)}"></span></span><span class="nav-text">${esc(serverTitle(s))}</span></button>`;
+    }
+  } else if (servers()[0]) {
+    html += `<button class="nav-item ${r.view === "system" ? "active" : ""}" data-go="#/system/${enc(servers()[0].name)}" title="Система">${icon("gauge")}<span class="nav-text">Система</span></button>`;
+  }
   if (apps().length) html += `<div class="nav-sep"></div><div class="nav-label">Приложения</div>`;
-  for (const a of apps()) {
-    const active = r.view === "app" && r.name === a.name;
-    html += `<button class="nav-item ${active ? "active" : ""}" data-go="#/app/${encodeURIComponent(a.name)}" title="${esc(a.name)} — ${esc(STATUS[a.status] || a.status)}">${miniCover(a)}<span class="nav-text">${esc(a.name)}</span></button>`;
+  for (const a of sorted(apps())) {
+    const active = r.view === "app" && r.server === a.server && r.name === a.name;
+    const where = multi() ? ` · ${a.server}` : "";
+    html += `<button class="nav-item ${active ? "active" : ""}" data-go="${appHash(a)}" title="${esc(a.name)}${esc(where)} — ${esc(STATUS[a.status] || a.status)}">${miniCover(a)}<span class="nav-text">${esc(a.name)}</span></button>`;
   }
   patch($("#sidebar"), html);
 }
 
 function subline(a) {
-  const parts = [STATUS[a.status] || a.status];
+  const parts = [];
+  if (multi()) parts.push(a.server);
+  parts.push(STATUS[a.status] || a.status);
   if (a.status === "running") parts.push(dur(a.uptime_seconds));
   if (a.repo.branch) parts.push(a.repo.branch);
   if (a.restarts) parts.push(`${a.restarts} ${plural(a.restarts, "перезапуск", "перезапуска", "перезапусков")}`);
@@ -461,12 +511,26 @@ function subline(a) {
 
 function sorted(list) {
   const order = { running: 0, waiting: 1, stopped: 2, disabled: 3 };
+  const byName = (a, b) => a.name.localeCompare(b.name) || a.server.localeCompare(b.server);
   const by = {
-    name: (a, b) => a.name.localeCompare(b.name),
-    status: (a, b) => (!!b.last_error - !!a.last_error) || order[a.status] - order[b.status] || a.name.localeCompare(b.name),
-    uptime: (a, b) => (b.uptime_seconds ?? -1) - (a.uptime_seconds ?? -1) || a.name.localeCompare(b.name),
+    name: byName,
+    status: (a, b) => (!!b.last_error - !!a.last_error) || order[a.status] - order[b.status] || byName(a, b),
+    uptime: (a, b) => (b.uptime_seconds ?? -1) - (a.uptime_seconds ?? -1) || byName(a, b),
   }[S.sort];
   return [...list].sort(by);
+}
+
+function serverBanners() {
+  let html = "";
+  for (const s of servers()) {
+    if (s.state !== "online") {
+      html += `<div class="banner">${icon("warn")}<div><b>${esc(serverTitle(s))}: ${s.state === "connecting" ? "подключаюсь…" : "нет связи"}</b>${s.error && s.state !== "connecting" ? `<pre>${esc(s.error)}</pre>` : ""}</div></div>`;
+    } else if (!(s.daemon && s.daemon.running) && apps().some((a) => a.server === s.name)) {
+      const where = multi() ? `На сервере ${esc(serverTitle(s))} д` : "Д";
+      html += `<div class="banner info">${icon("info")}<div>${where}емон snt не запущен — приложения не работают и не обновляются. Запустите <code>snt run</code> или установите службу <code>snt service install</code>.</div></div>`;
+    }
+  }
+  return html ? `<div style="margin-top:16px">${html}</div>` : "";
 }
 
 function renderHome() {
@@ -476,30 +540,31 @@ function renderHome() {
   const list = sorted(S.problemsOnly ? all.filter(isProblem) : all);
   setMain("home", `<div id="h-top"></div><div class="list" id="h-list"></div>`);
   S.detailFor = null;
-  let html = `<div class="head"><h1>Приложения</h1></div>`;
-  if (S.snap && !S.snap.daemon.running && all.length) {
-    html += `<div class="banner info" style="margin-top:16px">${icon("info")}<div>Демон snt не запущен — приложения не работают и не обновляются. Запустите <code>snt run</code> или установите службу <code>snt service install</code>.</div></div>`;
-  }
+  let html = `<div class="head"><h1>Приложения</h1></div>` + serverBanners();
+  const where = multi() ? ` · ${servers().length} ${plural(servers().length, "сервер", "сервера", "серверов")}` : "";
   html += `<div class="actions">
     <button class="pill primary" data-action="update-all" ${running ? "" : "disabled"}>${icon("update")}Обновить все</button>
     <button class="pill outline ${S.problemsOnly ? "on" : ""}" data-action="problems">${icon("filter")}${S.problemsOnly ? "Показать все" : "Проблемы"}</button>
     <button class="pill neutral" data-action="sort">${icon("sort")}Сортировка: ${SORTS.find((s) => s[0] === S.sort)[1]}</button>
-    <span class="summary">${all.length} ${plural(all.length, "приложение", "приложения", "приложений")} · ${running} ${plural(running, "работает", "работают", "работают")}${problems ? ` · ${problems} с проблемами` : ""}</span>
+    <span class="summary">${all.length} ${plural(all.length, "приложение", "приложения", "приложений")} · ${running} ${plural(running, "работает", "работают", "работают")}${problems ? ` · ${problems} с проблемами` : ""}${where}</span>
   </div>`;
   let items = [];
   if (!all.length) {
-    html += `<div class="empty"><h2>Пока пусто</h2>Добавьте первое приложение из терминала:<br><br><code>snt add https://github.com/you/your-bot</code><br><br>Оно появится здесь через пару секунд.</div>`;
+    html += multi()
+      ? `<div class="empty"><h2>Пока пусто</h2>На серверах нет приложений. Добавьте:<br><br><code>snt -r ИМЯ add https://github.com/you/your-bot</code></div>`
+      : `<div class="empty"><h2>Пока пусто</h2>Добавьте первое приложение из терминала:<br><br><code>snt add https://github.com/you/your-bot</code><br><br>Оно появится здесь через пару секунд.</div>`;
   } else if (!list.length) {
     html += `<div class="empty"><h2>Проблем нет</h2>Все приложения работают как надо.</div>`;
   } else {
     items = list.map((a) => {
       const meta = a.cpu_percent != null ? `${Math.round(a.cpu_percent)}% · ${bytes(a.memory_bytes)}` : (a.commit || a.checkout || "").slice(0, 8);
       const canRestart = a.status === "running" || a.status === "waiting";
-      return { key: a.name, html: `<div class="row ${a.name === S.current ? "current" : ""}" data-open="${esc(a.name)}" tabindex="0" role="button" aria-label="${esc(a.name)}">
+      const verb = canRestart ? "Перезапустить" : "Запустить";
+      return { key: key(a), html: `<div class="row ${key(a) === S.current ? "current" : ""}" data-open="${esc(appHash(a))}" tabindex="0" role="button" aria-label="${esc(a.name)}">
         ${cover(a.name)}
         <div class="row-text"><div class="sub">${subline(a)}</div><div class="title">${esc(a.name)}</div></div>
         <div class="row-meta">${esc(meta)}</div>
-        <button class="icon-btn row-act" data-act="${canRestart ? "restart" : "start"}" data-name="${esc(a.name)}" title="${canRestart ? "Перезапустить" : "Запустить"}" aria-label="${canRestart ? "Перезапустить" : "Запустить"} ${esc(a.name)}">${icon(canRestart ? "restart" : "play")}</button>
+        <button class="icon-btn row-act" data-act="${canRestart ? "restart" : "start"}" data-server="${esc(a.server)}" data-name="${esc(a.name)}" title="${verb}" aria-label="${verb} ${esc(a.name)}">${icon(canRestart ? "restart" : "play")}</button>
       </div>` };
     });
   }
@@ -507,18 +572,20 @@ function renderHome() {
   patchList($("#h-list"), items);
 }
 
-function renderDetail(name) {
-  const a = app(name);
+function renderDetail(srv, name) {
+  const a = app(srv, name);
+  const id = `${srv}/${name}`;
   if (!a) {
-    S.mainMode = null;
-    patch($("#main"), `<div class="empty"><h2>Нет приложения «${esc(name)}»</h2>Возможно, его удалили. <a href="#/">Ко всем приложениям</a></div>`);
-    S.detailFor = null;
+    S.mainMode = null; S.detailFor = null;
+    const s = server(srv);
+    const why = s && s.state !== "online" ? `Сервер ${esc(srv)} сейчас не на связи.` : "Возможно, его удалили.";
+    patch($("#main"), `<div class="empty"><h2>Нет приложения «${esc(name)}»</h2>${why} <a href="#/">Ко всем приложениям</a></div>`);
     return;
   }
-  if (S.detailFor !== name) {
-    S.detailFor = name; S.follow = true;
+  if (S.detailFor !== id) {
+    S.detailFor = id; S.follow = true;
     S.logs = []; S.logsFor = null;
-    S.mainMode = "detail:" + name;
+    S.mainMode = "detail:" + id;
     $("#main").__html = null;
     $("#main").innerHTML = `
       <div class="detail-head" id="d-head"></div>
@@ -537,14 +604,16 @@ function renderDetail(name) {
     loadLogs();
   }
   $("#followBtn").classList.toggle("on", S.follow);
-  patch($("#d-head"), `${cover(a.name, "big")}<div style="min-width:0"><div class="sub">${subline(a)}</div><h1>${esc(a.name)}</h1><div class="repo">${esc(shortRepo(a.repo.url))}</div></div>`);
+  const where = multi() ? ` · ${esc(serverTitle(server(srv)))}` : "";
+  patch($("#d-head"), `${cover(a.name, "big")}<div style="min-width:0"><div class="sub">${subline(a)}</div><h1>${esc(a.name)}</h1><div class="repo">${esc(shortRepo(a.repo.url))}${where}</div></div>`);
   const live = a.status === "running" || a.status === "waiting";
+  const d = `data-server="${esc(srv)}" data-name="${esc(a.name)}"`;
   patch($("#d-actions"), `
-    <button class="pill primary" data-act="restart" data-name="${esc(a.name)}" ${live ? "" : "disabled"}>${icon("restart")}Перезапустить</button>
+    <button class="pill primary" data-act="restart" ${d} ${live ? "" : "disabled"}>${icon("restart")}Перезапустить</button>
     ${a.enabled
-      ? `<button class="pill outline" data-act="stop" data-name="${esc(a.name)}">${icon("pause")}Остановить</button>`
-      : `<button class="pill outline" data-act="start" data-name="${esc(a.name)}">${icon("play")}Включить</button>`}
-    <button class="pill neutral" data-act="update" data-name="${esc(a.name)}" ${live ? "" : "disabled"}>${icon("update")}Проверить обновления</button>
+      ? `<button class="pill outline" data-act="stop" ${d}>${icon("pause")}Остановить</button>`
+      : `<button class="pill outline" data-act="start" ${d}>${icon("play")}Включить</button>`}
+    <button class="pill neutral" data-act="update" ${d} ${live ? "" : "disabled"}>${icon("update")}Проверить обновления</button>
     <span class="summary">${a.pid ? `pid ${a.pid}` : ""}${a.cpu_percent != null ? ` · CPU ${Math.round(a.cpu_percent)}% · ${bytes(a.memory_bytes)}` : ""}</span>`);
   let warn = "";
   if (a.last_error) {
@@ -557,6 +626,7 @@ function renderDetail(name) {
   const kv = (k, v, mono) => `<div><div class="k">${k}</div><div class="v ${mono ? "mono" : ""}">${v}</div></div>`;
   patch($("#d-info"), [
     kv("Статус", `<span class="dot ${statusDot(a)}" style="display:inline-block;margin-right:8px"></span>${esc(STATUS[a.status])}${a.status === "running" ? ` · ${dur(a.uptime_seconds)}` : ""}`),
+    multi() ? kv("Сервер", esc(serverTitle(server(srv)))) : "",
     kv("Команда", esc(a.command.join(" ")), true),
     kv("Репозиторий", esc(a.repo.url), true),
     kv("Ветка", esc(a.repo.branch || "по умолчанию")),
@@ -585,19 +655,20 @@ function renderLogs() {
 
 async function loadLogs() {
   const r = route();
-  if (r.view !== "app") return;
-  const name = r.name;
+  if (r.view !== "app" || !S.auth) return;
+  const id = `${r.server}/${r.name}`;
   try {
-    const data = await api(`/api/apps/${encodeURIComponent(name)}/logs?lines=400`);
-    const changed = S.logsFor !== name || data.lines.length !== S.logs.length || data.lines[data.lines.length - 1] !== S.logs[S.logs.length - 1];
-    S.logsFor = name; S.logs = data.lines;
+    const data = await api(`/api/s/${enc(r.server)}/apps/${enc(r.name)}/logs?lines=400`);
+    const changed = S.logsFor !== id || data.lines.length !== S.logs.length || data.lines[data.lines.length - 1] !== S.logs[S.logs.length - 1];
+    S.logsFor = id; S.logs = data.lines;
     if (changed) renderLogs();
   } catch {}
 }
 
 /* system page ------------------------------------------------------------ */
 const HIST_MAX = 90; // 3 minutes at one sample per 2 s
-const HIST = { cpu: [], mem: [] };
+const HIST = {}; // server -> {cpu: [], mem: []}
+function hist(srv) { return (HIST[srv] = HIST[srv] || { cpu: [], mem: [] }); }
 function pushHist(arr, v) { if (v == null) return; arr.push({ t: Date.now(), v }); if (arr.length > HIST_MAX) arr.shift(); }
 function hhmmss(t) { return new Date(t).toLocaleTimeString("ru-RU"); }
 function pct(v) { return v == null ? "—" : `${Math.round(v)}%`; }
@@ -627,21 +698,20 @@ function drawChart(el, data) {
   const tip = i != null && data[i] ? `<div class="tip" style="left:${X(data[i].t)}px">${pct(data[i].v)} · ${hhmmss(data[i].t)}</div>` : "";
   patch(el, svg + tip);
 }
-function bindChart(el, key) {
+function bindChart(el, getData) {
   if (!el || el.__bound) return;
   el.__bound = true;
-  const pick = (e) => {
-    const data = HIST[key];
+  el.addEventListener("mousemove", (e) => {
+    const data = getData();
     if (!data.length) return;
-    const rect = el.getBoundingClientRect(), w = rect.width;
+    const rect = el.getBoundingClientRect();
     const span = (HIST_MAX - 1) * 2000, t1 = data[data.length - 1].t, t0 = t1 - span;
-    const t = t0 + ((e.clientX - rect.left) / w) * span;
+    const t = t0 + ((e.clientX - rect.left) / rect.width) * span;
     let best = 0;
     data.forEach((d, j) => { if (Math.abs(d.t - t) < Math.abs(data[best].t - t)) best = j; });
     el.__hover = best; drawChart(el, data);
-  };
-  el.addEventListener("mousemove", pick);
-  el.addEventListener("mouseleave", () => { el.__hover = null; drawChart(el, HIST[key]); });
+  });
+  el.addEventListener("mouseleave", () => { el.__hover = null; drawChart(el, getData()); });
 }
 
 function level(p) { return p == null ? "" : p >= 90 ? "crit" : p >= 80 ? "warn" : ""; }
@@ -650,11 +720,29 @@ function stateLine(p, what) {
   if (!l) return "";
   return `<div class="state ${l}">${icon("warn")}${l === "crit" ? `${what} почти заполнен` : `${what} заполнен больше чем на 80%`}</div>`;
 }
+function systemServer() {
+  const r = route();
+  return r.server || (servers()[0] && servers()[0].name);
+}
+function redrawCharts() {
+  const srv = systemServer();
+  if (!srv) return;
+  drawChart($("#cpu-chart"), hist(srv).cpu);
+  drawChart($("#mem-chart"), hist(srv).mem);
+}
 
 function renderSystem() {
-  const fresh = setMain("system", `
-    <div class="head"><h1>Система</h1></div>
+  const srv = systemServer();
+  const sv = server(srv);
+  if (!sv) {
+    S.mainMode = null;
+    patch($("#main"), `<div class="empty"><h2>Нет сервера «${esc(srv)}»</h2><a href="#/">К обзору</a></div>`);
+    return;
+  }
+  const fresh = setMain("system:" + srv, `
+    <div class="head"><h1 id="sys-title"></h1></div>
     <div class="host" id="sys-host"></div>
+    <div id="sys-banner"></div>
     <div class="tiles">
       <section class="tile"><div class="k">Процессор</div><div class="big" id="cpu-val">—</div><div class="small" id="cpu-sub"></div><div class="chart" id="cpu-chart"></div></section>
       <section class="tile"><div class="k">Память</div><div class="big" id="mem-val">—</div><div class="small" id="mem-sub"></div><div class="chart" id="mem-chart"></div></section>
@@ -663,20 +751,21 @@ function renderSystem() {
     </div>
     <section class="card"><h3>Приложения</h3><div id="sys-apps"></div></section>`);
   S.detailFor = null;
-  if (fresh) { bindChart($("#cpu-chart"), "cpu"); bindChart($("#mem-chart"), "mem"); }
-  const s = S.sys;
-  if (!s) { patch($("#sys-host"), S.sysError ? `Нет данных: ${esc(S.sysError)}` : "Загрузка…"); return; }
+  if (fresh) { bindChart($("#cpu-chart"), () => hist(srv).cpu); bindChart($("#mem-chart"), () => hist(srv).mem); }
+  patch($("#sys-title"), multi() ? esc(serverTitle(sv)) : "Система");
+  patch($("#sys-banner"), sv.state !== "online"
+    ? `<div class="banner">${icon("warn")}<div><b>${sv.state === "connecting" ? "Подключаюсь…" : "Нет связи с сервером"}</b>${sv.error && sv.state !== "connecting" ? `<pre>${esc(sv.error)}</pre>` : ""}</div></div>` : "");
+  const s = S.sys[srv];
+  if (!s) { patch($("#sys-host"), S.sysError[srv] && sv.state === "online" ? `Нет данных: ${esc(S.sysError[srv])}` : esc(sv.label || "")); return; }
   patch($("#sys-host"), `${esc(s.hostname)} · ${esc(s.os)} · ${esc(s.arch)}`);
 
   patch($("#cpu-val"), pct(s.cpu_percent));
   const load = s.load_avg ? ` · нагрузка ${s.load_avg.join(" / ")}` : "";
   patch($("#cpu-sub"), `${s.cpu_count || "?"} ${plural(s.cpu_count || 0, "ядро", "ядра", "ядер")}${load}`);
-  drawChart($("#cpu-chart"), HIST.cpu);
-
   const m = s.memory;
   patch($("#mem-val"), m ? pct(m.percent) : "—");
   patch($("#mem-sub"), m ? `${bytes(m.used)} из ${bytes(m.total)} · свободно ${bytes(m.available)}` : "нет данных");
-  drawChart($("#mem-chart"), HIST.mem);
+  redrawCharts();
 
   const d = s.disk;
   patch($("#disk-val"), d ? pct(d.percent) : "—");
@@ -687,7 +776,7 @@ function renderSystem() {
   patch($("#up-sub"), `без перезагрузки · Python ${esc(s.python)} · snt ${esc(s.smolnugget)}`);
   patch($("#up-extra"), s.psutil ? "" : `<div class="state">${icon("info")}для CPU и памяти поставьте psutil</div>`);
 
-  const live = apps().filter((a) => a.pid);
+  const live = apps().filter((a) => a.server === srv && a.pid);
   const total = m ? m.total : null;
   patch($("#sys-apps"), !live.length ? `<div class="small" style="color:var(--muted)">Нет запущенных приложений.</div>` :
     `<div class="usage head"><span></span><span>приложение</span><span class="num">CPU</span><span class="num">память</span><span></span></div>` +
@@ -701,15 +790,31 @@ function renderSystem() {
 }
 
 async function pollSystem() {
+  if (route().view !== "system" || !S.snap || !S.auth) return;
+  const srv = systemServer();
+  const sv = server(srv);
+  if (!sv || sv.state !== "online") return;
   try {
-    S.sys = await api("/api/system"); S.sysError = null;
-    pushHist(HIST.cpu, S.sys.cpu_percent);
-    pushHist(HIST.mem, S.sys.memory && S.sys.memory.percent);
-  } catch (e) { S.sysError = e.message; }
-  if (route().view === "system" && S.snap) renderSystem();
+    const s = await api(`/api/s/${enc(srv)}/system`);
+    S.sys[srv] = s; S.sysError[srv] = null;
+    pushHist(hist(srv).cpu, s.cpu_percent);
+    pushHist(hist(srv).mem, s.memory && s.memory.percent);
+  } catch (e) { S.sysError[srv] = e.message; }
+  if (route().view === "system") renderSystem();
+}
+
+function renderAuth() {
+  S.mainMode = null; S.detailFor = null;
+  patch($("#sidebar"), "");
+  patch($("#daemonChip"), `<span class="dot waiting"></span><span class="chip-text">нужен ключ доступа</span>`);
+  patch($("#main"), `<div class="empty">${icon("lock")}<h2>Нужна ссылка с ключом</h2>
+    Откройте адрес, который напечатала команда <code>snt web</code> (или <code>snt hub</code>,
+    <code>snt -r ИМЯ web</code>) — в нём есть <code>?t=…</code>. Ключ меняется при каждом запуске,
+    поэтому после перезапуска нужна новая ссылка.</div>`);
 }
 
 function render() {
+  if (!S.auth) return renderAuth();
   renderChrome();
   renderSidebar();
   const r = route();
@@ -719,24 +824,27 @@ function render() {
   } else if (r.view === "system") {
     renderSystem();
   } else if (r.view === "app") {
-    if (S.current !== r.name && app(r.name)) { S.current = r.name; store.set("current", r.name); }
-    renderDetail(r.name);
+    const id = `${r.server}/${r.name}`;
+    if (S.current !== id && app(r.server, r.name)) { S.current = id; store.set("current", id); }
+    renderDetail(r.server, r.name);
   } else {
     renderHome();
   }
-  document.title = r.view === "app" ? `${r.name} · smolnugget` : r.view === "system" ? "Система · smolnugget" : "smolnugget";
+  const titles = { app: `${r.name} · smolnugget`, system: `${multi() && r.server ? r.server : "Система"} · smolnugget` };
+  document.title = titles[r.view] || "smolnugget";
 }
 
 async function poll() {
+  if (!S.auth && !store.get(TOKEN_KEY, "")) return render();
   try { S.snap = await api("/api/status"); S.error = null; }
-  catch (e) { S.error = e.message; }
+  catch (e) { if (e.status !== 401) S.error = e.message; }
   render();
 }
 
 /* events ----------------------------------------------------------------- */
 document.addEventListener("click", (e) => {
   const actBtn = e.target.closest("[data-act]");
-  if (actBtn) { e.stopPropagation(); if (!actBtn.disabled) act(actBtn.dataset.name, actBtn.dataset.act); return; }
+  if (actBtn) { e.stopPropagation(); if (!actBtn.disabled) act(actBtn.dataset.server, actBtn.dataset.name, actBtn.dataset.act); return; }
   const action = e.target.closest("[data-action]");
   if (action) {
     const k = action.dataset.action;
@@ -748,7 +856,7 @@ document.addEventListener("click", (e) => {
   const nav = e.target.closest("[data-go]");
   if (nav) { $("#app").classList.remove("nav-open"); go(nav.dataset.go); return; }
   const row = e.target.closest("[data-open]");
-  if (row) { go(`#/app/${encodeURIComponent(row.dataset.open)}`); return; }
+  if (row) { go(row.dataset.open); return; }
   if (e.target.closest("#followBtn")) {
     S.follow = !S.follow; $("#followBtn").classList.toggle("on", S.follow);
     if (S.follow) $("#log").scrollTop = $("#log").scrollHeight;
@@ -757,7 +865,7 @@ document.addEventListener("click", (e) => {
 });
 document.addEventListener("keydown", (e) => {
   const row = e.target.closest && e.target.closest("[data-open]");
-  if (row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); go(`#/app/${encodeURIComponent(row.dataset.open)}`); }
+  if (row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); go(row.dataset.open); }
   if (e.key === "Escape" && route().view === "app") go("#/");
 });
 const narrow = window.matchMedia("(max-width: 820px)");
@@ -766,14 +874,13 @@ $("#menuBtn").addEventListener("click", () => {
   if (narrow.matches) { $("#app").classList.toggle("nav-open"); return; }
   const c = $("#app").classList.toggle("collapsed");
   store.set("collapsed", c);
-  if (route().view === "system") setTimeout(() => { drawChart($("#cpu-chart"), HIST.cpu); drawChart($("#mem-chart"), HIST.mem); }, 220);
+  if (route().view === "system") setTimeout(redrawCharts, 220);
 });
-window.addEventListener("resize", () => { if (route().view === "system") { drawChart($("#cpu-chart"), HIST.cpu); drawChart($("#mem-chart"), HIST.mem); } });
-window.addEventListener("hashchange", () => { render(); $("main").scrollTop = 0; });
+window.addEventListener("resize", () => { if (route().view === "system") redrawCharts(); });
+window.addEventListener("hashchange", () => { render(); pollSystem(); $("main").scrollTop = 0; });
 
 poll();
 setInterval(poll, 2000);
-pollSystem();
 setInterval(pollSystem, 2000);
 setInterval(loadLogs, 1500);
 </script>
