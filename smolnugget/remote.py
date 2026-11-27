@@ -308,6 +308,9 @@ def strip_remote_args(argv: list[str]) -> list[str]:
         a = argv[i]
         if not a.startswith("-"):  # the command: everything from here on is forwarded
             return out + argv[i:]
+        if a == "--no-color":  # local presentation only; older servers would reject it
+            i += 1
+            continue
         if a in ("-r", "--remote"):
             i += 2
             continue

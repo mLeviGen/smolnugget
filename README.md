@@ -107,12 +107,14 @@ If nothing matches, pass `-c` to `snt add`.
 
 | | |
 |---|---|
+| `snt` | no arguments: the status table, or a short getting-started guide if there are no apps yet |
 | `snt status` | all apps at a glance (`ls` works too) |
+| `snt doctor` | check python, git, ssh, the config, the daemon, disk space and every app; exits 1 on a FAIL |
 | `snt web -o` | local web dashboard at <http://localhost:8770> (see [Web UI](#web-ui)) |
 | `snt -r NAME web` | a saved server's dashboard, through SSH (see [Remote servers](#remote-servers)) |
 | `snt hub -o` | one dashboard for all saved servers ([details](#one-dashboard-for-every-server-snt-hub)) |
 | `snt top` | live monitor: ↑/↓ select, `r` restart, `u` update now, `s` start/stop, `q` quit |
-| `snt logs NAME -f` | follow an app's output (`-n 200` for more history) |
+| `snt logs NAME -f` | follow an app's output (`-n 200` for more history; NAME can be left out with a single app) |
 | `snt restart NAME` | restart now |
 | `snt update NAME` | check GitHub right now instead of waiting |
 | `snt stop NAME` / `snt start NAME` | disable / enable; stays that way across reboots |
@@ -123,7 +125,8 @@ If nothing matches, pass `-c` to `snt add`.
 | `snt run [NAME ...]` | run in the foreground (all apps, or only the named ones) |
 
 Global options: `--home DIR` (data directory, also `$SNT_HOME`), `-v` (debug output),
-`--log-file FILE` (also write snt's own log there).
+`--log-file FILE` (also write snt's own log there), `--no-color` (plain output; the `NO_COLOR`
+environment variable does the same, and colors are off anyway when output is piped).
 
 ## How it works
 
@@ -295,7 +298,7 @@ never included. Times are ISO 8601 UTC.
 ```json
 {
   "schema": 1,
-  "smolnugget": "2.3.0",
+  "smolnugget": "2.4.0",
   "generated_at": "2026-11-22T20:15:00+00:00",
   "daemon": { "running": true, "pid": 4100, "started_at": "2026-11-22T08:00:02+00:00" },
   "apps": [

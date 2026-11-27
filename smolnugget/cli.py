@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-from smolnugget import __version__
+from smolnugget import __version__, doctor, term
 from smolnugget.config import (
     PYTHON_NAMES, RESTART_POLICIES, AppConfig, ConfigError, Store, name_from_url, token_var_for,
     validate_name, validate_url,
@@ -117,8 +117,13 @@ def ask_token(url: str) -> str | None:
     return token or None
 
 
+HAS_SERVICE = sys.platform.startswith("linux")  # `snt service` is systemd-only
+
+
 def no_daemon_hint() -> str:
-    return "snt is not running - start it with 'snt run' (or install it: 'snt service install')"
+    if HAS_SERVICE:
+        return "snt is not running - start it with 'snt run' (or install it: 'snt service install')"
+    return "snt is not running - start it with 'snt run'"
 
 
 # --- add / edit / remove -----------------------------------------------------------
@@ -200,7 +205,8 @@ def cmd_add(args, store: Store) -> int:
     if daemon_running(store):
         print(f"\nsnt is running and starts it now. Follow it: snt logs {name} -f")
     else:
-        print("\nnext: snt run   (or keep it running as a service: snt service install)")
+        print("\nnext: snt run" + ("   (or keep it running as a service: snt service install)"
+                                   if HAS_SERVICE else ""))
     return 0
 
 
@@ -345,6 +351,15 @@ def cmd_status(args, store: Store) -> int:
     if not apps:
         print("no apps yet - add one with: snt add <github url>")
         return 0
+    print_table(snap)
+    return 0
+
+
+STATUS_STYLE = {"running": term.green, "waiting": term.yellow, "stopped": term.dim,
+                "disabled": term.dim}
+
+
+def print_table(snap: dict) -> None:
     rows = [("NAME", "STATUS", "PID", "UPTIME", "RESTARTS", "COMMIT", "REPO")]
     errors = []
     for s in snap["apps"]:
@@ -352,22 +367,36 @@ def cmd_status(args, store: Store) -> int:
                      str(s["restarts"]), (s["commit"] or s["checkout"] or "-")[:8],
                      s["repo"]["url"].removeprefix("https://github.com/").removesuffix(".git")))
         if s["last_error"]:
-            errors.append(f"{s['name']}: {s['last_error'].splitlines()[0]}")
+            errors.append(f"{s['name']}: {term.clean(s['last_error'].splitlines()[0])}")
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
-    for r in rows:
-        print("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
+    for n, r in enumerate(rows):
+        cells = [c.ljust(w) for c, w in zip(r, widths)]
+        if n and (style := STATUS_STYLE.get(r[1])):
+            cells[1] = style(cells[1])
+        print("  ".join(cells).rstrip())
     if errors:
         print("\nerrors:")
         for e in errors:
-            print("  " + e)
+            print("  " + term.red(e))
     if not snap["daemon"]["running"] and not any(s["status"] in ("running", "waiting")
                                                  for s in snap["apps"]):
-        print("\n" + no_daemon_hint())
-    return 0
+        print("\n" + term.dim(no_daemon_hint()))
+
+
+def pick_log_app(store: Store, name: str | None) -> str:
+    if name:
+        store.get(name)
+        return name
+    apps = store.load()
+    if len(apps) == 1:
+        return next(iter(apps))
+    if not apps:
+        raise CliError("no apps yet - add one with: snt add <github url>")
+    raise CliError("which app? use: snt logs NAME\napps: " + ", ".join(sorted(apps)))
 
 
 def cmd_logs(args, store: Store) -> int:
-    store.get(args.name)
+    args.name = pick_log_app(store, args.name)
     path = store.log_path(args.name)
     for line in tail(path, args.lines):
         print(line)
@@ -397,6 +426,22 @@ def cmd_logs(args, store: Store) -> int:
             time.sleep(0.3)
     except KeyboardInterrupt:
         return 0
+
+
+LEVEL_STYLE = {doctor.OK: term.green, doctor.WARN: term.yellow, doctor.FAIL: term.red}
+
+
+def cmd_doctor(args, store: Store) -> int:
+    results = doctor.run_checks(store)
+    for level, title, hint in results:
+        line = f"{LEVEL_STYLE[level](f'{level:<4}')}  {title}"
+        if hint:
+            line += "  " + term.dim(f"- {hint}")
+        print(line)
+    failed = sum(1 for level, _, _ in results if level == doctor.FAIL)
+    warned = sum(1 for level, _, _ in results if level == doctor.WARN)
+    print(f"\n{failed} failed, {warned} warning(s)")
+    return 1 if failed else 0
 
 
 def cmd_top(args, store: Store) -> int:
@@ -595,6 +640,27 @@ def cmd_service(args, store: Store) -> int:
     return 0
 
 
+GETTING_STARTED = """smolnugget is installed. No apps yet.
+
+  snt add <github url>        add a repo (it is cloned and the start command detected)
+  snt run                     run it in the foreground{service}
+  snt hub                     one dashboard for remote servers (snt remote add ...)
+
+snt --help for all commands""".format(
+    service=", or: snt service install" if HAS_SERVICE else "")
+
+
+def cmd_default(store: Store) -> int:
+    """`snt` without a command: status when there are apps, a short intro otherwise."""
+    apps = list(store.load().values())
+    if not apps:
+        print(GETTING_STARTED)
+        return 0
+    print_table(snapshot(store, apps))
+    print("\n" + term.dim("snt --help for all commands"))
+    return 0
+
+
 # --- parser ------------------------------------------------------------------
 def add_app_options(p: argparse.ArgumentParser, editing: bool) -> None:
     d = (lambda v: None) if editing else (lambda v: v)
@@ -619,24 +685,68 @@ def add_app_options(p: argparse.ArgumentParser, editing: bool) -> None:
                    help="read the token from this environment variable / secrets.env key")
 
 
+HELP_DESCRIPTION = """Keep GitHub repositories and their processes running on a server.
+
+Apps:
+  add URL [NAME]      clone a repo, detect how to run it, save it
+  edit NAME           change an app's settings (applied live)
+  remove NAME (rm)    remove an app (--purge also deletes its files)
+  show NAME           print an app's config
+
+Run:
+  run [NAME ...]      run snt in the foreground (all apps, follows config changes)
+  service ACTION      run snt as a systemd service: install, uninstall, show
+  sync NAME           clone/update and run setup once, without starting
+
+Control:
+  start NAME ...      enable apps (snt starts them)
+  stop NAME ...       disable apps (snt stops them and keeps them stopped)
+  restart NAME ...    restart running apps
+  update NAME ...     check GitHub for updates right now
+
+Watch:
+  status (ls)         show all apps (--json for dashboards)
+  logs [NAME]         print an app's output (-f to follow)
+  top                 live monitor with logs and hotkeys
+  web                 local web UI with status, logs and controls
+  hub                 one dashboard for all saved servers
+  doctor              check the environment and the apps
+
+Servers:
+  remote ACTION       saved servers: add, list, rm
+  -r, --remote NAME   run any command on a saved server, e.g. snt -r prod status
+
+Run 'snt COMMAND --help' for the options of a command."""
+
+HELP_EPILOG = """examples:
+  snt add https://github.com/you/bot       add and detect how to start it
+  snt run                                  start everything in the foreground
+  snt service install                      keep it running across reboots (Linux)
+  snt logs bot -f                          follow an app's output
+  snt -r prod status                       status of a saved server
+  snt hub -o                               dashboard for all servers in the browser"""
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="snt",
-        description="Keep GitHub repositories and their processes running on a server.",
-        epilog="quick start:  snt add https://github.com/you/bot  &&  snt run",
+        prog="snt", usage="snt [options] COMMAND [args]", description=HELP_DESCRIPTION,
+        epilog=HELP_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("-V", "--version", action="version", version=f"smolnugget {__version__}")
     parser.add_argument("--home", type=Path,
                         help="data directory (default: $SNT_HOME or ~/.smolnugget)")
+    parser.add_argument("--no-color", action="store_true",
+                        help="plain output (also: NO_COLOR environment variable)")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     parser.add_argument("--log-file", help="also write snt's own log to this file (rotated)")
     parser.add_argument("-r", "--remote", metavar="NAME",
                         help="run the command on a saved server (see 'snt remote'); "
                              "'snt -r NAME web' opens its dashboard here")
-    sub = parser.add_subparsers(dest="cmd", metavar="COMMAND")
+    # no help= on the subparsers: the command list lives in the hand-written description
+    sub = parser.add_subparsers(dest="cmd", metavar="COMMAND", help=argparse.SUPPRESS)
 
     def cmd(name, func, help, aliases=()):
-        p = sub.add_parser(name, help=help, aliases=list(aliases), description=help)
+        p = sub.add_parser(name, aliases=list(aliases), description=help)
         p.set_defaults(func=func)
         return p
 
@@ -691,7 +801,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-check", action="store_true", help="save without testing the connection")
 
     p = cmd("logs", cmd_logs, "print an app's output")
-    p.add_argument("name")
+    p.add_argument("name", nargs="?", help="app name (optional when there is only one app)")
     p.add_argument("-f", "--follow", action="store_true", help="keep printing new lines")
     p.add_argument("-n", "--lines", type=int, default=50, help="how many lines (default 50)")
 
@@ -716,6 +826,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("action", choices=["install", "uninstall", "show"])
     p.add_argument("--system", action="store_true",
                    help="system-wide unit (needs sudo) instead of a user unit")
+
+    cmd("doctor", cmd_doctor, "check the environment (python, git, ssh, config, apps)")
     return parser
 
 
@@ -735,11 +847,31 @@ def run_on_remote(args, local: Store, argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        return 130
+
+
+def _main(argv: list[str] | None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    term.set_disabled(args.no_color)
     if not getattr(args, "func", None):
-        parser.print_help()
-        return 2
+        if args.remote:  # `snt -r NAME` alone: that server's status, like plain `snt` here
+            argv_list = list(sys.argv[1:] if argv is None else argv)
+            args.func = cmd_status
+            try:
+                return run_on_remote(args, Store(None), argv_list + ["status"])
+            except (CliError, ConfigError) as e:
+                print(f"{term.red('error:', sys.stderr)} {e}", file=sys.stderr)
+                return 1
+        setup_logging(args.verbose, args.log_file, timestamps=False)
+        try:
+            return cmd_default(Store(args.home))
+        except (ConfigError, GitError) as e:
+            print(f"{term.red('error:', sys.stderr)} {e}", file=sys.stderr)
+            return 1
     setup_logging(args.verbose, args.log_file, timestamps=args.func in (cmd_run, cmd_hub))
     store = Store(args.home)
     try:
@@ -747,5 +879,5 @@ def main(argv: list[str] | None = None) -> int:
             return run_on_remote(args, Store(None), sys.argv[1:] if argv is None else argv)
         return args.func(args, store)
     except (CliError, ConfigError, GitError) as e:
-        print(f"error: {e}", file=sys.stderr)
+        print(f"{term.red('error:', sys.stderr)} {e}", file=sys.stderr)
         return 1

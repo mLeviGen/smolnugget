@@ -1,13 +1,15 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from smolnugget.cli import main
+from smolnugget.cli import build_parser, main
 from smolnugget.config import Store
 from smolnugget.state import is_managed
 from smolnugget.supervisor import Daemon
@@ -16,8 +18,13 @@ from tests.helpers import Remote, wait_for
 SLEEPER = "import time\nprint('up', flush=True)\ntime.sleep(120)\n"
 
 
-def run(*argv):
-    out, err = io.StringIO(), io.StringIO()
+class Tty(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def run(*argv, tty=False):
+    out, err = (Tty(), Tty()) if tty else (io.StringIO(), io.StringIO())
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         code = main(list(argv))
     return code, out.getvalue(), err.getvalue()
@@ -33,8 +40,8 @@ class CliTest(unittest.TestCase):
         self.store = Store(self.home)
         self.remote = Remote(self.root / "r")
 
-    def snt(self, *argv):
-        return run(*self.h, *argv)
+    def snt(self, *argv, tty=False):
+        return run(*self.h, *argv, tty=tty)
 
     def daemon(self):
         d = Daemon(self.store, None, tick=0.1)
@@ -179,6 +186,89 @@ class CliTest(unittest.TestCase):
         code, _, err = self.snt("logs", "b")
         self.assertEqual(code, 0)
         self.assertIn("no logs yet", err)
+
+    # --- no command, help, colors, doctor, logs -----------------------------------------
+    def test_no_command_without_apps_shows_getting_started(self):
+        code, out, _ = self.snt()
+        self.assertEqual(code, 0)
+        self.assertIn("snt add <github url>", out)
+        self.assertIn("snt hub", out)
+        self.assertNotIn("usage:", out)
+
+    def test_no_command_with_apps_shows_status_and_hint(self):
+        self.snt("add", "https://github.com/u/b.git", "b", "--no-clone", "-c", "x")
+        code, out, _ = self.snt()
+        self.assertEqual(code, 0)
+        self.assertIn("NAME", out)
+        self.assertIn("stopped", out)
+        self.assertIn("snt --help for all commands", out)
+        self.assertNotIn("usage:", out)
+
+    def test_help_text_has_sections(self):
+        text = build_parser().format_help()
+        for word in ("Apps:", "Run:", "Control:", "Watch:", "Servers:", "examples:",
+                     "--no-color", "doctor"):
+            self.assertIn(word, text)
+
+    def test_colors_only_on_a_tty(self):
+        self.snt("add", "https://github.com/u/b.git", "b", "--no-clone", "-c", "x")
+        self.assertNotIn("\x1b[", self.snt("status")[1])
+        with mock.patch.dict(os.environ):
+            os.environ.pop("NO_COLOR", None)
+            self.assertIn("\x1b[2mstopped", self.snt("status", tty=True)[1])
+            self.assertNotIn("\x1b[", self.snt("--no-color", "status", tty=True)[1])
+            self.assertNotIn("\x1b[", self.snt("status", "--json", tty=True)[1])
+            os.environ["NO_COLOR"] = "1"
+            self.assertNotIn("\x1b[", self.snt("status", tty=True)[1])
+        self.assertIn("\x1b[2mstopped", self.snt("status", tty=True)[1])  # no state leaks
+
+    def test_error_prefix_is_red_on_tty_only(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("NO_COLOR", None)
+            code, _, err = self.snt("show", "nope", tty=True)
+            self.assertEqual(code, 1)
+            self.assertTrue(err.startswith("\x1b[31merror:\x1b[0m "))
+            _, _, err = self.snt("show", "nope")
+            self.assertTrue(err.startswith("error: "))
+
+    def test_doctor_exit_codes(self):
+        code, out, _ = self.snt("doctor")
+        self.assertEqual(code, 0, out)
+        self.assertIn("OK", out)
+        self.snt("add", "https://github.com/u/b.git", "b", "--no-clone", "-c", "x",
+                 "--token-env", "SNT_TEST_MISSING_TOKEN")
+        with mock.patch.dict(os.environ):
+            os.environ.pop("SNT_TEST_MISSING_TOKEN", None)
+            code, out, _ = self.snt("doctor")
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL", out)
+        self.assertIn("WARN", out)
+
+    def test_doctor_invalid_config(self):
+        self.home.mkdir(parents=True)
+        (self.home / "config.json").write_text("garbage", encoding="utf-8")
+        code, out, _ = self.snt("doctor")
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL  config.json", out)
+
+    def test_logs_without_name(self):
+        code, _, err = self.snt("logs")
+        self.assertEqual(code, 1)
+        self.assertIn("no apps", err)
+        self.snt("add", "https://github.com/u/a.git", "a", "--no-clone", "-c", "x")
+        code, _, err = self.snt("logs")  # the only app
+        self.assertEqual(code, 0)
+        self.assertIn("no logs yet for a", err)
+        self.snt("add", "https://github.com/u/b.git", "b", "--no-clone", "-c", "x")
+        code, _, err = self.snt("logs")
+        self.assertEqual(code, 1)
+        self.assertTrue(err.startswith("error: which app?"))
+        self.assertIn("a, b", err)
+
+    def test_keyboard_interrupt_exits_130(self):
+        with mock.patch("smolnugget.cli.Store.load", side_effect=KeyboardInterrupt):
+            code, out, err = self.snt("status")
+        self.assertEqual((code, out, err), (130, "", ""))
 
     def test_top_needs_terminal(self):
         code, _, err = self.snt("top")

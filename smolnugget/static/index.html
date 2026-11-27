@@ -74,9 +74,9 @@ svg.i { width: 22px; height: 22px; fill: currentColor; flex: none; }
 .nav-item {
   display: flex; align-items: center; gap: 14px; width: 100%; height: 50px; padding: 0 14px;
   border-radius: 16px; color: var(--muted); text-align: left; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; transition: background .15s, color .15s;
+  transition: background .15s, color .15s; /* no overflow clip: it cut the status dots */
 }
-.nav-item span { overflow: hidden; text-overflow: ellipsis; }
+.nav-item .nav-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .nav-item:hover { background: var(--hover); color: var(--text); }
 .nav-item.active { background: var(--selected); color: var(--text); font-weight: 600; }
 .nav-item > svg.i { margin: 0 2px; }
@@ -725,13 +725,26 @@ async function loadLogs() {
 const HIST_MAX = 90; // 3 minutes at one sample per 2 s
 const HIST = {}; // server -> {cpu: [], mem: []}
 function hist(srv) { return (HIST[srv] = HIST[srv] || { cpu: [], mem: [] }); }
-function pushHist(arr, v) { if (v == null) return; arr.push({ t: Date.now(), v }); if (arr.length > HIST_MAX) arr.shift(); }
+const HIST_SPAN = (HIST_MAX - 1) * 2000;
+function pushHist(arr, v) {
+  if (v == null) return;
+  const now = Date.now();
+  arr.push({ t: now, v });
+  // drop by age, not only by count: a background tab polls less often than every 2 s
+  while (arr.length > HIST_MAX || (arr.length && arr[0].t < now - HIST_SPAN)) arr.shift();
+}
+function windowed(data) {
+  if (!data.length) return data;
+  const tEnd = data[data.length - 1].t - HIST_SPAN;
+  return data.filter((d) => d.t >= tEnd);
+}
 function hhmmss(t) { return new Date(t).toLocaleTimeString("ru-RU"); }
 function pct(v) { return v == null ? "—" : `${Math.round(v)}%`; }
 
 // Single-series line in the accent colour; fixed 0-100 scale; crosshair + tooltip on hover.
 function drawChart(el, data) {
   if (!el) return;
+  data = windowed(data);  // only what fits: older points would be drawn left of the chart
   if (data.length < 2) { patch(el, `<div class="empty-chart">график появится через пару секунд…</div>`); return; }
   const w = Math.max(80, el.clientWidth), h = el.clientHeight || 64, pad = 2;
   const span = (HIST_MAX - 1) * 2000, t1 = data[data.length - 1].t, t0 = t1 - span;
@@ -751,14 +764,15 @@ function drawChart(el, data) {
     <polygon points="${area}" fill="var(--accent-soft)"/>
     <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
     ${hover}</svg>`;
-  const tip = i != null && data[i] ? `<div class="tip" style="left:${X(data[i].t)}px">${pct(data[i].v)} · ${hhmmss(data[i].t)}</div>` : "";
+  const tipX = i != null && data[i] ? Math.min(w - 52, Math.max(52, X(data[i].t))) : 0;  // keep the tooltip inside
+  const tip = i != null && data[i] ? `<div class="tip" style="left:${tipX}px">${pct(data[i].v)} · ${hhmmss(data[i].t)}</div>` : "";
   patch(el, svg + tip);
 }
 function bindChart(el, getData) {
   if (!el || el.__bound) return;
   el.__bound = true;
   el.addEventListener("mousemove", (e) => {
-    const data = getData();
+    const data = windowed(getData());
     if (!data.length) return;
     const rect = el.getBoundingClientRect();
     const span = (HIST_MAX - 1) * 2000, t1 = data[data.length - 1].t, t0 = t1 - span;

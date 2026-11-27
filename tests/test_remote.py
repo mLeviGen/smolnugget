@@ -65,6 +65,19 @@ class RemoteCommandsTest(unittest.TestCase):
         self.assertEqual(cmd[-2], "me@example.com")
         self.assertTrue(cmd[-1].endswith("exec snt logs 'my app' -n 5"), cmd[-1])
 
+    def test_no_color_is_not_forwarded_and_bare_r_shows_status(self):
+        self.assertEqual(rm.strip_remote_args(["--no-color", "-r", "vps", "logs", "a"]), ["logs", "a"])
+        self.run_cli("remote", "add", "vps", "me@example.com", "--no-check")
+        with mock.patch("smolnugget.remote.shutil.which", return_value="ssh"), \
+                mock.patch("smolnugget.remote.subprocess.call", return_value=0) as call:
+            code, _, _ = self.run_cli("-r", "vps")
+        self.assertEqual(code, 0)
+        self.assertTrue(call.call_args[0][0][-1].endswith("exec snt status"))
+
+    def test_doctor_text_is_cleaned(self):
+        from smolnugget import term
+        self.assertEqual(term.clean("bad\x1b[2Jthing\ttab\x07"), "bad[2Jthing\ttab")
+
     def test_remote_flag_not_for_remote_command(self):
         code, _, err = self.run_cli("-r", "vps", "remote", "list")
         self.assertEqual(code, 1)
