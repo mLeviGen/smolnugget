@@ -250,7 +250,9 @@ class HubWebTest(WebTestBase):
         t = data["totals"]
         self.assertEqual(t["servers"], 2)  # the offline one is not counted
         self.assertEqual(t["cpu_count"], local["cpu_count"] + 1)
-        self.assertEqual(t["memory"]["total"], local["memory"]["total"] + 1000)
+        # memory is unknown where neither psutil nor /proc exists (e.g. macOS/Windows in CI)
+        local_mem = local["memory"]["total"] if local["memory"] else 0
+        self.assertEqual(t["memory"]["total"], local_mem + 1000)
         self.assertEqual(t["disk"]["used"], local["disk"]["used"] + 9_000)
 
     def test_totals_weight_cpu_by_cores(self):
