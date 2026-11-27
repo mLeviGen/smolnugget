@@ -431,16 +431,36 @@ def cmd_logs(args, store: Store) -> int:
 LEVEL_STYLE = {doctor.OK: term.green, doctor.WARN: term.yellow, doctor.FAIL: term.red}
 
 
+def print_fixes(results, numbers: dict[int, int]) -> None:
+    if not numbers:
+        print("Nothing to fix.")
+        return
+    print("How to fix:")
+    for index, number in sorted(numbers.items(), key=lambda kv: kv[1]):
+        _, title, text = results[index]
+        print(f"{number}. {term.clean(title)}")
+        for line in doctor.fix_lines(text):
+            if doctor.is_command(line):
+                print("    " + term.bold(term.clean(doctor.command_text(line))))
+            else:
+                print("  " + term.clean(line))
+
+
 def cmd_doctor(args, store: Store) -> int:
     results = doctor.run_checks(store)
-    for level, title, hint in results:
-        line = f"{LEVEL_STYLE[level](f'{level:<4}')}  {title}"
-        if hint:
-            line += "  " + term.dim(f"- {hint}")
+    failed = sum(1 for r in results if r[0] == doctor.FAIL)
+    if getattr(args, "json", False):
+        print(json.dumps(doctor.to_json(results), indent=2))
+        return 1 if failed else 0
+    numbers = doctor.problem_numbers(results)
+    for index, (level, title, _) in enumerate(results):
+        line = f"{LEVEL_STYLE[level](f'{level:<4}')}  {term.clean(title)}"
+        if index in numbers:
+            line += "  " + term.dim(f"[{numbers[index]}]")
         print(line)
-    failed = sum(1 for level, _, _ in results if level == doctor.FAIL)
-    warned = sum(1 for level, _, _ in results if level == doctor.WARN)
-    print(f"\n{failed} failed, {warned} warning(s)")
+    warned = sum(1 for r in results if r[0] == doctor.WARN)
+    print(f"\n{failed} failed, {warned} warning(s)\n")
+    print_fixes(results, numbers)
     return 1 if failed else 0
 
 
@@ -827,7 +847,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--system", action="store_true",
                    help="system-wide unit (needs sudo) instead of a user unit")
 
-    cmd("doctor", cmd_doctor, "check the environment (python, git, ssh, config, apps)")
+    p = cmd("doctor", cmd_doctor, "check the environment and list how to fix each problem")
+    p.add_argument("--json", action="store_true", help="print the result as JSON")
     return parser
 
 

@@ -109,7 +109,7 @@ If nothing matches, pass `-c` to `snt add`.
 |---|---|
 | `snt` | no arguments: the status table, or a short getting-started guide if there are no apps yet |
 | `snt status` | all apps at a glance (`ls` works too) |
-| `snt doctor` | check python, git, ssh, the config, the daemon, disk space and every app; exits 1 on a FAIL |
+| `snt doctor` | check python, git, ssh, the config, the daemon, disk space, every app and (Linux) OS support, updates, reboot, SSH passwords and the service; problems are numbered and a "How to fix" list gives the commands; `--json` for scripts; exits 1 on a FAIL |
 | `snt web -o` | local web dashboard at <http://localhost:8770> (see [Web UI](#web-ui)) |
 | `snt -r NAME web` | a saved server's dashboard, through SSH (see [Remote servers](#remote-servers)) |
 | `snt hub -o` | one dashboard for all saved servers ([details](#one-dashboard-for-every-server-snt-hub)) |
@@ -298,7 +298,7 @@ never included. Times are ISO 8601 UTC.
 ```json
 {
   "schema": 1,
-  "smolnugget": "2.4.0",
+  "smolnugget": "2.5.0",
   "generated_at": "2026-11-22T20:15:00+00:00",
   "daemon": { "running": true, "pid": 4100, "started_at": "2026-11-22T08:00:02+00:00" },
   "apps": [
