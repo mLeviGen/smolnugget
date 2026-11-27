@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <title>smolnugget</title>
+  <defs>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#efeff2"/>
+    </linearGradient>
+    <linearGradient id="side" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d6d6db"/>
+      <stop offset="1" stop-color="#b3b3ba"/>
+    </linearGradient>
+    <linearGradient id="nug" x1="0.25" y1="0" x2="0.65" y2="1">
+      <stop offset="0" stop-color="#f8c763"/>
+      <stop offset="0.55" stop-color="#e59b36"/>
+      <stop offset="1" stop-color="#b8661d"/>
+    </linearGradient>
+    <radialGradient id="shine" cx="0.36" cy="0.3" r="0.42">
+      <stop offset="0" stop-color="#fff6cf" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#fff6cf" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- keycap -->
+  <rect x="11" y="34" width="234" height="211" rx="58" fill="url(#side)"/>
+  <rect x="11" y="11" width="234" height="200" rx="58" fill="url(#face)"/>
+
+  <!-- nugget -->
+  <path d="M64 120C58 94 78 72 104 72C118 60 146 58 162 68C186 70 200 90 196 110C204 130 190 154 166 156C150 168 118 168 102 160C80 162 62 144 64 120Z"
+        transform="translate(3 9)" fill="#000" opacity="0.13"/>
+  <path d="M64 120C58 94 78 72 104 72C118 60 146 58 162 68C186 70 200 90 196 110C204 130 190 154 166 156C150 168 118 168 102 160C80 162 62 144 64 120Z"
+        fill="url(#nug)" stroke="#8c4c14" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M64 120C58 94 78 72 104 72C118 60 146 58 162 68C186 70 200 90 196 110C204 130 190 154 166 156C150 168 118 168 102 160C80 162 62 144 64 120Z"
+        fill="url(#shine)"/>
+  <!-- breading -->
+  <g fill="#a3561a" opacity="0.5">
+    <circle cx="96" cy="100" r="5"/>
+    <circle cx="131" cy="88" r="4"/>
+    <circle cx="160" cy="101" r="5"/>
+    <circle cx="117" cy="127" r="4.5"/>
+    <circle cx="148" cy="135" r="5"/>
+    <circle cx="90" cy="137" r="4"/>
+    <circle cx="176" cy="126" r="3.5"/>
+    <circle cx="112" cy="107" r="3"/>
+  </g>
+  <g fill="#ffe39a" opacity="0.9">
+    <circle cx="104" cy="90" r="2.6"/>
+    <circle cx="151" cy="118" r="2.6"/>
+    <circle cx="127" cy="148" r="2.4"/>
+    <circle cx="178" cy="107" r="2.2"/>
+    <circle cx="82" cy="120" r="2.2"/>
+  </g>
+</svg>

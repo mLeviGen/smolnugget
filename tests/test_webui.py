@@ -26,10 +26,15 @@ class FakeRemote:
                 "apps": [{"name": "bot", "status": "running", "pid": 99}]}
 
     def system(self):
+        if self.state != "online":
+            raise SourceError(503, self.error)
         return {"hostname": self.name}
 
     def logs(self, app, lines):
         return {"name": app, "lines": [f"{self.name} line"]}
+
+    def icon(self, app):
+        return b"\x89PNG\r\n\x1a\n" + b"0" * 10
 
     def action(self, app, action):
         self.actions.append((app, action))
@@ -169,6 +174,23 @@ class LocalWebTest(WebTestBase):
         self.assertEqual(self.request("GET", "/api/nothing")[0].status, 404)
         self.assertEqual(self.request("GET", "/nothing", auth=False)[0].status, 404)
 
+    def test_app_icon_from_repo(self):
+        self.assertIsNone(self.get_json("/api/status")["apps"][0]["icon"])
+        self.assertEqual(self.request("GET", "/api/s/local/apps/bot/icon")[0].status, 404)
+        repo = self.store.repo_dir("bot")
+        (repo / "assets").mkdir(parents=True)
+        svg = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>'
+        (repo / "assets" / "logo.svg").write_bytes(svg)
+        self.server._cache = None  # /api/status is cached for a second
+        self.assertTrue(self.get_json("/api/status")["apps"][0]["icon"].startswith("logo.svg:"))
+        resp, body = self.request("GET", "/api/s/local/apps/bot/icon")
+        self.assertEqual((resp.status, body), (200, svg))
+        self.assertEqual(resp.getheader("Content-Type"), "image/svg+xml")
+        self.assertIn("sandbox", resp.getheader("Content-Security-Policy"))
+        self.assertEqual(self.request("GET", "/api/s/local/apps/bot/icon", auth=False)[0].status, 401)
+        (repo / "icon.png").write_bytes(b"GIF89a not really a png")  # wins by order, wrong type
+        self.assertEqual(self.request("GET", "/api/s/local/apps/bot/icon")[0].status, 415)
+
     def test_logs(self):
         path = self.store.log_path("bot")
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -215,9 +237,35 @@ class HubWebTest(WebTestBase):
         self.assertEqual(sorted((a["server"], a["name"]) for a in data["apps"]),
                          [("local", "bot"), ("local", "web"), ("vps", "bot")])
 
+    def test_systems_and_totals(self):
+        self.vps.system = lambda: {"hostname": "vps", "cpu_count": 1, "cpu_percent": 50.0,
+                                   "memory": {"total": 1000, "used": 600},
+                                   "disk": {"total": 10_000, "used": 9_000}}
+        data = self.get_json("/api/systems")
+        by_name = {s["name"]: s for s in data["servers"]}
+        self.assertEqual(set(by_name), {"local", "vps", "gcp"})
+        self.assertEqual(by_name["gcp"]["state"], "offline")
+        self.assertIsNone(by_name["gcp"]["system"])
+        local = by_name["local"]["system"]
+        t = data["totals"]
+        self.assertEqual(t["servers"], 2)  # the offline one is not counted
+        self.assertEqual(t["cpu_count"], local["cpu_count"] + 1)
+        self.assertEqual(t["memory"]["total"], local["memory"]["total"] + 1000)
+        self.assertEqual(t["disk"]["used"], local["disk"]["used"] + 9_000)
+
+    def test_totals_weight_cpu_by_cores(self):
+        from smolnugget.webui import totals
+        t = totals([{"cpu_count": 1, "cpu_percent": 100.0, "memory": None, "disk": None},
+                    {"cpu_count": 3, "cpu_percent": 0.0}])
+        self.assertEqual((t["cpu_count"], t["cpu_percent"]), (4, 25.0))
+        self.assertIsNone(t["memory"])
+        self.assertEqual(totals([])["cpu_percent"], None)
+
     def test_routes_reach_the_right_server(self):
         self.assertEqual(self.get_json("/api/s/vps/system")["hostname"], "vps")
         self.assertEqual(self.get_json("/api/s/vps/apps/bot/logs")["lines"], ["vps line"])
+        resp, _ = self.request("GET", "/api/s/vps/apps/bot/icon")
+        self.assertEqual((resp.status, resp.getheader("Content-Type")), (200, "image/png"))
         resp, _ = self.post("/api/s/vps/apps/bot/restart")
         self.assertEqual(resp.status, 200)
         self.assertEqual(self.vps.actions, [("bot", "restart")])

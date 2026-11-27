@@ -28,6 +28,7 @@ import logging
 import re
 import secrets
 import socket
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -49,9 +50,39 @@ SCHEMA = 2
 ACTIONS = ("restart", "update", "start", "stop")
 NAME = r"[A-Za-z0-9._-]+"
 SYSTEM_ROUTE = re.compile(rf"^/api/s/({NAME})/system$")
-APP_ROUTE = re.compile(rf"^/api/s/({NAME})/apps/({NAME})/(logs|restart|update|start|stop)$")
+APP_ROUTE = re.compile(rf"^/api/s/({NAME})/apps/({NAME})/(logs|icon|restart|update|start|stop)$")
 MAX_LOG_LINES = 2000
 MAX_BODY = 64 * 1024
+MAX_ICON = 512 * 1024
+# looked up in this order in the app's checkout; the first one found is its cover
+ICON_FILES = (
+    "icon.svg", "icon.png", "logo.svg", "logo.png", "favicon.svg", "favicon.png", "favicon.ico",
+    "icon.ico", "assets/icon.svg", "assets/icon.png", "assets/logo.svg", "assets/logo.png",
+    "static/favicon.ico", ".github/icon.png",
+)
+
+
+def icon_type(data: bytes) -> str | None:
+    """Content type from the bytes themselves (PNG, ICO, SVG only)."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data[:4] == b"\x00\x00\x01\x00":
+        return "image/x-icon"
+    head = data[:512].lstrip().lower()
+    if head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in data[:2048].lower()):
+        return "image/svg+xml"
+    return None
+
+
+def find_icon(repo: Path) -> Path | None:
+    for name in ICON_FILES:
+        p = repo / name
+        try:
+            if p.is_file() and 0 < p.stat().st_size <= MAX_ICON:
+                return p
+        except OSError:
+            continue
+    return None
 
 
 class SourceError(Exception):
@@ -106,6 +137,10 @@ class LocalSource:
         with self._lock:
             for a in snap["apps"]:
                 a["cpu_percent"], a["memory_bytes"] = self._usage.get_raw(a["pid"])
+        for a in snap["apps"]:
+            icon = find_icon(self.store.repo_dir(a["name"]))
+            # name + mtime: the UI refetches the picture only when it changes
+            a["icon"] = f"{icon.name}:{icon.stat().st_mtime_ns}" if icon else None
         return {"label": self.label, "daemon": snap["daemon"], "apps": snap["apps"]}
 
     def system(self) -> dict:
@@ -122,6 +157,13 @@ class LocalSource:
     def logs(self, app: str, lines: int) -> dict:
         self._known(app)
         return {"name": app, "lines": tail(self.store.log_path(app), lines)}
+
+    def icon(self, app: str) -> bytes:
+        self._known(app)
+        path = find_icon(self.store.repo_dir(app))
+        if path is None:
+            raise SourceError(404, "no icon")
+        return path.read_bytes()
 
     def action(self, app: str, action: str) -> str:
         try:
@@ -145,6 +187,25 @@ class LocalSource:
 
     def close(self) -> None:
         pass
+
+
+def totals(systems: list[dict]) -> dict:
+    """Sum the servers' resources. CPU % is weighted by core count (all cores, all servers)."""
+    cores = sum(s.get("cpu_count") or 0 for s in systems)
+    busy = [(s["cpu_percent"], s.get("cpu_count") or 1) for s in systems if s.get("cpu_percent") is not None]
+    cpu = round(sum(p * c for p, c in busy) / sum(c for _, c in busy), 1) if busy else None
+
+    def add(key: str) -> dict | None:
+        parts = [s[key] for s in systems if s.get(key)]
+        if not parts:
+            return None
+        total = sum(p["total"] for p in parts)
+        used = sum(p["used"] for p in parts)
+        return {"total": total, "used": used, "free": total - used,
+                "percent": round(used / total * 100, 1) if total else None}
+
+    return {"servers": len(systems), "cpu_count": cores, "cpu_percent": cpu,
+            "memory": add("memory"), "disk": add("disk")}
 
 
 # --- HTTP ----------------------------------------------------------------------------
@@ -197,7 +258,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         if url.path in ("/", "/index.html"):
             csp = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-                   "img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
+                   "img-src data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
                    "frame-ancestors 'none'")
             return self._send(HTTPStatus.OK, self.server.page.get(), "text/html; charset=utf-8",
                               {"Content-Security-Policy": csp, "X-Frame-Options": "DENY"})
@@ -210,6 +271,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(HTTPStatus.OK, {"ok": True})
             if url.path == "/api/status":
                 return self._json(HTTPStatus.OK, self.server.status())
+            if url.path == "/api/systems":
+                return self._json(HTTPStatus.OK, self.server.systems())
             if m := SYSTEM_ROUTE.match(url.path):
                 return self._json(HTTPStatus.OK, self._source(m.group(1)).system())
             m = APP_ROUTE.match(url.path)
@@ -220,6 +283,15 @@ class Handler(BaseHTTPRequestHandler):
                     lines = 300
                 lines = max(1, min(lines, MAX_LOG_LINES))
                 return self._json(HTTPStatus.OK, self._source(m.group(1)).logs(m.group(2), lines))
+            if m and m.group(3) == "icon":
+                data = self._source(m.group(1)).icon(m.group(2))
+                ctype = icon_type(data)
+                if ctype is None or len(data) > MAX_ICON:
+                    return self._error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "not a PNG, ICO or SVG icon")
+                # an SVG could carry script: never let it run, even if opened directly
+                return self._send(HTTPStatus.OK, data, ctype, {
+                    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+                    "Cache-Control": "private, max-age=3600"})
         except SourceError as e:
             return self._error(e.status, str(e))
         return self._error(HTTPStatus.NOT_FOUND, "not found")
@@ -261,6 +333,14 @@ class Handler(BaseHTTPRequestHandler):
 
 class WebServer(ThreadingHTTPServer):
     daemon_threads = True
+    # On Windows SO_REUSEADDR lets a second server bind a port that is already in use, and
+    # requests then reach whichever one Windows picks. Bind exclusively there instead.
+    allow_reuse_address = sys.platform != "win32"
+
+    def server_bind(self) -> None:
+        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
     def __init__(self, sources, host: str = "127.0.0.1", port: int = 8770,
                  token: str | None = None, hub: bool = False):
@@ -319,8 +399,28 @@ class WebServer(ThreadingHTTPServer):
             self._cache = (time.monotonic(), data)
         return data
 
+    def _system_of(self, src) -> dict:
+        entry = {"name": src.name, "state": getattr(src, "state", "online"), "error": None,
+                 "system": None}
+        try:
+            entry["system"] = src.system()
+            entry["state"] = "online"
+        except SourceError as e:
+            entry["error"] = str(e)
+            if entry["state"] == "online":
+                entry["state"] = "offline"
+        return entry
+
+    def systems(self) -> dict:
+        """Host metrics of every server plus the totals across them."""
+        servers = list(self._pool.map(self._system_of, self.sources.values()))
+        return {"generated_at": iso(time.time()), "servers": servers,
+                "totals": totals([s["system"] for s in servers if s["system"]])}
+
     def server_close(self) -> None:
         super().server_close()
+        if not hasattr(self, "_pool"):  # bind failed inside __init__: nothing else to close
+            return
         self._pool.shutdown(wait=False)
         for s in self.sources.values():
             s.close()

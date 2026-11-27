@@ -85,5 +85,13 @@ class RemoteSource:
     def logs(self, app: str, lines: int) -> dict:
         return self._call("GET", f"/api/s/local/apps/{quote(app)}/logs?lines={lines}")
 
+    def icon(self, app: str) -> bytes:
+        if self.state != "online" or not self.tunnel.alive():
+            raise SourceError(503, self.error or "connecting…")
+        code, body = self.tunnel.request("GET", f"/api/s/local/apps/{quote(app)}/icon")
+        if code != 200:
+            raise SourceError(code or 503, "no icon")
+        return body
+
     def action(self, app: str, action: str) -> str:
         return self._call("POST", f"/api/s/local/apps/{quote(app)}/{action}").get("message", "")

@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/smolnugget.svg" width="112" alt="smolnugget"></p>
+
 # smolnugget
 
 **Push to GitHub — your server updates and restarts the app by itself.**
@@ -197,6 +199,11 @@ stop/start and update buttons. The **System** page shows the host: CPU and memor
 3-minute history, disk space (with a warning past 80% / 90%), uptime, and how much CPU and
 memory each app takes. The ☰ button folds the sidebar down to icons.
 
+**App icons.** If an app's repository has an icon, the dashboard shows it instead of the
+initials: the first of `icon.svg`, `icon.png`, `logo.svg`, `logo.png`, `favicon.svg`,
+`favicon.png`, `favicon.ico`, `icon.ico`, or the same names in `assets/` (PNG, ICO or SVG,
+up to 512 KB). smolnugget's own icon is in [`assets/`](assets/) as SVG, PNG and ICO.
+
 It needs no extra packages and works offline. It talks to the same files as the CLI, so run it
 next to `snt run` or the service; it does not run apps itself. CPU/memory appear when `psutil`
 is installed (the `[top]` extra, included by the installers).
@@ -240,7 +247,9 @@ snt hub --only vps,gcp     # just some of them
 The hub opens one SSH tunnel per server, starts `snt web` there (its access key goes over the
 tunnel's stdin, never on the server's command line), and shows everything in one place: all apps
 with the server they run on, one page per server with its CPU / memory / disk, and the same
-buttons as `snt web`. A server that drops off is shown as offline and reconnected automatically.
+buttons as `snt web`. The **Resources** page adds it all up: total cores (CPU load averaged
+over all of them), total memory and disk used, a 3-minute history, and a table comparing the
+servers side by side. A server that drops off is shown as offline and reconnected automatically.
 Closing the hub closes the tunnels; `snt web` on a server also exits by itself after 90 s
 without requests, so nothing is left running there if a connection dies silently.
 
@@ -286,7 +295,7 @@ never included. Times are ISO 8601 UTC.
 ```json
 {
   "schema": 1,
-  "smolnugget": "2.2.0",
+  "smolnugget": "2.3.0",
   "generated_at": "2026-11-22T20:15:00+00:00",
   "daemon": { "running": true, "pid": 4100, "started_at": "2026-11-22T08:00:02+00:00" },
   "apps": [
